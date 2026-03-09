@@ -6799,6 +6799,7 @@ dependencies = [
  "gpui",
  "libc",
  "smithay-client-toolkit",
+ "thiserror 2.0.18",
  "wayland-client",
  "wayland-protocols 0.32.11",
  "wayland-protocols-wlr",

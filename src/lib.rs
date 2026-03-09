@@ -36,6 +36,7 @@
 //!     .spawn_nonblocking();
 //! ```
 
+mod error;
 mod gamma;
 mod handlers;
 mod run;
@@ -45,5 +46,6 @@ mod toplevel;
 mod transition;
 mod window;
 
+pub use error::SpawnError;
 pub use window::ZenWindow;
 pub use window::ZenWindowBuilder;

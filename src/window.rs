@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use crate::error::SpawnError;
 use crate::run::run;
 
 /// Builder for configuring which outputs to dim.
@@ -97,11 +98,13 @@ impl ZenWindowBuilder {
     /// Spawn on a background thread.
     ///
     /// Blocks briefly until Wayland setup completes (typically a few
-    /// milliseconds). Returns an error if the Wayland connection fails.
+    /// milliseconds). Returns a [`SpawnError`] if the Wayland connection
+    /// fails, a required protocol is missing, or the thread cannot be
+    /// created.
     ///
     /// Returns a [`ZenWindow`] handle. Dropping it removes overlays
     /// and restores gamma.
-    pub fn spawn(self) -> Result<ZenWindow, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn spawn(self) -> Result<ZenWindow, SpawnError> {
         let (ready_tx, ready_rx) = mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -111,18 +114,27 @@ impl ZenWindowBuilder {
                 let config = ZenConfig::from_builder(&self);
                 let shutdown = Arc::clone(&shutdown);
                 move || run(config, Some(ready_tx), shutdown)
-            })?;
+            })
+            .map_err(SpawnError::ThreadSpawn)?;
 
         match ready_rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => {}
+            Ok(()) => Ok(ZenWindow {
+                _handle: Some(handle),
+                shutdown,
+            }),
+            Err(_) => {
+                // Channel closed without a ready signal — the thread
+                // returned an error or panicked during setup.
+                match handle.join() {
+                    Ok(Err(e)) => Err(e),
+                    Err(payload) => std::panic::resume_unwind(payload),
+                    Ok(Ok(())) => Ok(ZenWindow {
+                        _handle: None,
+                        shutdown,
+                    }),
+                }
+            }
         }
-
-        Ok(ZenWindow {
-            _handle: Some(handle),
-            shutdown,
-        })
     }
 
     /// Spawn without blocking the calling thread.
@@ -155,7 +167,7 @@ impl ZenWindowBuilder {
 /// Overlay surfaces remain visible as long as this handle exists.
 /// Dropping it disconnects from Wayland, removes overlays, and restores gamma.
 pub struct ZenWindow {
-    _handle: Option<JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>>,
+    _handle: Option<JoinHandle<Result<(), SpawnError>>>,
     shutdown: Arc<AtomicBool>,
 }
 
