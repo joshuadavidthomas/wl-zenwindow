@@ -25,6 +25,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1;
 
+use crate::error::SpawnError;
 use crate::state::OverlaySurface;
 use crate::state::ZenState;
 use crate::transition::ease_out_quad;
@@ -56,26 +57,37 @@ fn poll_wayland_fd(fd: std::os::unix::io::BorrowedFd<'_>, timeout_ms: i32) -> bo
 
 pub(crate) fn run(
     config: ZenConfig,
-    ready_tx: Option<mpsc::Sender<Result<(), String>>>,
+    ready_tx: Option<mpsc::Sender<()>>,
     shutdown: Arc<AtomicBool>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), SpawnError> {
     if let Some(delay) = config.settle_delay {
         std::thread::sleep(delay);
     }
 
-    let conn = Connection::connect_to_env()?;
-    let (globals, mut event_queue) = registry_queue_init(&conn)?;
+    let conn = Connection::connect_to_env().map_err(|e| SpawnError::WaylandConnection(e.into()))?;
+    let (globals, mut event_queue) =
+        registry_queue_init(&conn).map_err(|e| SpawnError::Setup(e.into()))?;
     let qh = event_queue.handle();
 
     let registry = RegistryState::new(&globals);
     let output_state = OutputState::new(&globals, &qh);
-    let compositor = CompositorState::bind(&globals, &qh)?;
-    let layer_shell = LayerShell::bind(&globals, &qh)?;
+    let compositor =
+        CompositorState::bind(&globals, &qh).map_err(|e| SpawnError::MissingProtocol {
+            protocol: "wl_compositor",
+            source: e.into(),
+        })?;
+    let layer_shell = LayerShell::bind(&globals, &qh).map_err(|e| SpawnError::MissingProtocol {
+        protocol: "zwlr_layer_shell_v1",
+        source: e.into(),
+    })?;
     let viewporter: Option<WpViewporter> = try_bind(&globals, &qh);
     let alpha_modifier: Option<WpAlphaModifierV1> = try_bind(&globals, &qh);
     let gamma_manager: Option<ZwlrGammaControlManagerV1> = try_bind(&globals, &qh);
-    let shm = Shm::bind(&globals, &qh)?;
-    let pool = SlotPool::new(256, &shm)?;
+    let shm = Shm::bind(&globals, &qh).map_err(|e| SpawnError::MissingProtocol {
+        protocol: "wl_shm",
+        source: e.into(),
+    })?;
+    let pool = SlotPool::new(256, &shm).map_err(|e| SpawnError::Setup(e.into()))?;
 
     let toplevel_manager: Option<ZwlrForeignToplevelManagerV1> = if config.skip_active {
         try_bind(&globals, &qh)
@@ -111,8 +123,12 @@ pub(crate) fn run(
     };
 
     // Discover outputs and toplevels
-    event_queue.roundtrip(&mut state)?;
-    event_queue.roundtrip(&mut state)?;
+    event_queue
+        .roundtrip(&mut state)
+        .map_err(|e| SpawnError::Setup(e.into()))?;
+    event_queue
+        .roundtrip(&mut state)
+        .map_err(|e| SpawnError::Setup(e.into()))?;
 
     // Snapshot the active output
     state.active_output = state.active_output_name();
@@ -214,13 +230,17 @@ pub(crate) fn run(
         });
     }
 
-    event_queue.roundtrip(&mut state)?;
+    event_queue
+        .roundtrip(&mut state)
+        .map_err(|e| SpawnError::Setup(e.into()))?;
     while state.surfaces.iter().any(|s| !s.configured) {
-        event_queue.blocking_dispatch(&mut state)?;
+        event_queue
+            .blocking_dispatch(&mut state)
+            .map_err(|e| SpawnError::Setup(e.into()))?;
     }
 
     if let Some(tx) = ready_tx {
-        tx.send(Ok(())).ok();
+        tx.send(()).ok();
     }
 
     if let Some(duration) = config.fade_duration {
@@ -252,8 +272,12 @@ pub(crate) fn run(
                 state.set_gamma_dimmed(current_brightness);
             }
 
-            event_queue.flush()?;
-            event_queue.dispatch_pending(&mut state)?;
+            event_queue
+                .flush()
+                .map_err(|e| SpawnError::Setup(e.into()))?;
+            event_queue
+                .dispatch_pending(&mut state)
+                .map_err(|e| SpawnError::Setup(e.into()))?;
 
             if t >= 1.0 {
                 break;
@@ -275,25 +299,35 @@ pub(crate) fn run(
 
         if state.is_transitioning() {
             state.tick_transition();
-            event_queue.flush()?;
-            event_queue.dispatch_pending(&mut state)?;
+            event_queue
+                .flush()
+                .map_err(|e| SpawnError::Setup(e.into()))?;
+            event_queue
+                .dispatch_pending(&mut state)
+                .map_err(|e| SpawnError::Setup(e.into()))?;
             std::thread::sleep(transition_tick);
         } else {
             // Poll-based dispatch: wait up to 100ms for events so we
             // can periodically check the shutdown signal.
-            event_queue.flush()?;
+            event_queue
+                .flush()
+                .map_err(|e| SpawnError::Setup(e.into()))?;
             if let Some(guard) = event_queue.prepare_read() {
                 let fd = guard.connection_fd();
                 if poll_wayland_fd(fd, 100) {
                     if let Err(e) = guard.read() {
                         state.running = false;
-                        return Err(e.into());
+                        return Err(SpawnError::Setup(e.into()));
                     }
                 }
                 // If poll timed out, guard is dropped which cancels the read.
             }
-            event_queue.dispatch_pending(&mut state)?;
-            event_queue.flush()?;
+            event_queue
+                .dispatch_pending(&mut state)
+                .map_err(|e| SpawnError::Setup(e.into()))?;
+            event_queue
+                .flush()
+                .map_err(|e| SpawnError::Setup(e.into()))?;
         }
     }
 
