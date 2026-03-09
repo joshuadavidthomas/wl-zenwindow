@@ -51,7 +51,7 @@ impl ZenState {
         // Immediately dim the old monitor's overlay
         if let Some(ref name) = old_active {
             for idx in 0..self.surfaces.len() {
-                if self.surfaces[idx].is_backdrop {
+                if self.surfaces[idx].is_backdrop() {
                     continue;
                 }
                 if self.surfaces[idx].output_name.as_deref() == Some(name) {
@@ -131,7 +131,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ZenState {
                 if let Some(ref name) = prev_output_name {
                     let target_alpha = (state.target_opacity * 255.0) as u8;
                     for idx in 0..state.surfaces.len() {
-                        if state.surfaces[idx].is_backdrop {
+                        if state.surfaces[idx].is_backdrop() {
                             continue;
                         }
                         if state.surfaces[idx].output_name.as_deref() == Some(name.as_str()) {
@@ -173,7 +173,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ZenState {
                     if is_active || is_revealing {
                         let target_alpha = (state.target_opacity * 255.0) as u8;
                         for idx in 0..state.surfaces.len() {
-                            if state.surfaces[idx].is_backdrop {
+                            if state.surfaces[idx].is_backdrop() {
                                 continue;
                             }
                             if state.surfaces[idx].output_name.as_deref() == Some(name) {

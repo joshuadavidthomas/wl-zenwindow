@@ -59,7 +59,7 @@ impl ZenState {
             canvas[..4].copy_from_slice(&pixel.to_ne_bytes());
 
             for surface in self.surfaces.iter_mut() {
-                if surface.is_backdrop {
+                if surface.is_backdrop() {
                     continue;
                 }
                 if self

@@ -47,7 +47,7 @@ impl ZenState {
 
         // Only the newly active monitor's overlay fades — opaque → transparent
         for idx in 0..self.surfaces.len() {
-            if self.surfaces[idx].is_backdrop {
+            if self.surfaces[idx].is_backdrop() {
                 continue;
             }
             let name = self.surfaces[idx].output_name.as_deref();

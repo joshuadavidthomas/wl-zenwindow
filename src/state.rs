@@ -19,12 +19,21 @@ use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_v1::Zwl
 use crate::toplevel::TrackedToplevel;
 use crate::transition::Transition;
 
-pub(crate) struct OverlaySurface {
-    pub(crate) output_name: Option<String>,
+/// Distinguishes the two kinds of surfaces created per output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceRole {
+    /// Layer::Overlay — participates in transitions, skip logic, and all
+    /// optional protocol features (viewport, alpha surface, gamma control).
+    Overlay,
     /// Layer::Bottom backdrop — always opaque, never transitions.
     /// Prevents desktop flash when the compositor renders a frame
     /// before we receive foreign-toplevel events.
-    pub(crate) is_backdrop: bool,
+    Backdrop,
+}
+
+pub(crate) struct OverlaySurface {
+    pub(crate) output_name: Option<String>,
+    pub(crate) role: SurfaceRole,
     pub(crate) layer: LayerSurface,
     pub(crate) viewport: Option<WpViewport>,
     pub(crate) alpha_surface: Option<WpAlphaModifierSurfaceV1>,
@@ -34,6 +43,12 @@ pub(crate) struct OverlaySurface {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) configured: bool,
+}
+
+impl OverlaySurface {
+    pub(crate) fn is_backdrop(&self) -> bool {
+        self.role == SurfaceRole::Backdrop
+    }
 }
 
 pub(crate) struct ZenState {
@@ -63,7 +78,7 @@ impl ZenState {
     /// Whether a surface should be skipped (transparent).
     /// Backdrops are never skipped — they're always opaque.
     pub(crate) fn is_skipped(&self, idx: usize) -> bool {
-        if self.surfaces[idx].is_backdrop {
+        if self.surfaces[idx].is_backdrop() {
             return false;
         }
         let name = self.surfaces[idx].output_name.as_deref();

@@ -27,6 +27,7 @@ use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_manager
 
 use crate::error::SpawnError;
 use crate::state::OverlaySurface;
+use crate::state::SurfaceRole;
 use crate::state::ZenState;
 use crate::transition::ease_out_quad;
 use crate::window::ZenConfig;
@@ -188,7 +189,7 @@ pub(crate) fn run(
 
         state.surfaces.push(OverlaySurface {
             output_name: output_name.clone(),
-            is_backdrop: false,
+            role: SurfaceRole::Overlay,
             layer: layer_surface,
             viewport,
             alpha_surface,
@@ -217,7 +218,7 @@ pub(crate) fn run(
 
         state.surfaces.push(OverlaySurface {
             output_name,
-            is_backdrop: true,
+            role: SurfaceRole::Backdrop,
             layer: backdrop_layer,
             viewport: None,
             alpha_surface: None,
