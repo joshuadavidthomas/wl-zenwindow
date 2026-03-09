@@ -1,0 +1,11 @@
+[workspace]
+changelog_update = false
+semver_check = true
+git_tag_enable = true
+git_release_enable = true
+pr_name = ":bookmark: release v{{ version }}"
+publish_allow_dirty = false
+
+[[package]]
+name = "wl-zenwindow"
+changelog_path = "CHANGELOG.md"

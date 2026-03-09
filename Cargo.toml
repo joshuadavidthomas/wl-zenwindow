@@ -1,0 +1,27 @@
+[package]
+name = "wl-zenwindow"
+version = "0.1.0"
+edition = "2021"
+description = "Dim Wayland monitors with layer-shell overlays. Works with any wlr-compatible compositor."
+license = "MIT"
+repository = "https://github.com/joshuadavidthomas/wl-zenwindow"
+readme = "README.md"
+keywords = ["wayland", "layer-shell", "overlay", "dim", "wlroots"]
+categories = ["os::linux-apis", "gui"]
+
+[dependencies]
+libc = "0.2"
+smithay-client-toolkit = "0.20"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["staging"] }
+wayland-protocols-wlr = "0.3"
+
+[dev-dependencies]
+gpui = "0.2"
+
+[[example]]
+name = "gpui"
+path = "examples/gpui/main.rs"
+
+[lints.rust]
+unexpected_cfgs = "allow"
