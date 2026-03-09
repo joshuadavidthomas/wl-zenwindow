@@ -34,7 +34,7 @@
 - name: needs baking 🧁
   color: "#cbf26f"
   description: Requires more time for consideration or development before further action
-- name: 🕵️ needs research
+- name: needs research 🕵️
   color: "#d876e3"
   description: Issue that requires further investigation or information gathering
 - name: nice to have 💅
