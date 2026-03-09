@@ -18,6 +18,15 @@ Works with any compositor that supports `wlr-layer-shell`: Sway, Hyprland, Niri,
 - `zwlr_foreign_toplevel_manager_v1` for focus tracking (optional, falls back to dimming all outputs)
 - `zwlr_gamma_control_v1` for brightness dimming (optional)
 
+## Installation
+
+Add `wl-zenwindow` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+wl-zenwindow = "0.1"
+```
+
 See the [API documentation](https://docs.rs/wl-zenwindow) for the full builder API and configuration options.
 
 ## Usage
