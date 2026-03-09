@@ -1,6 +1,6 @@
 # wl-zenwindow
 
-Add zen mode to your Wayland app in a few lines. Dims all monitors except the one you're focused on, with smooth cross-fade transitions as you move between outputs.
+A Rust library that dims Wayland monitors using layer-shell overlays. Put dark, translucent surfaces over every monitor except the one you're working on — the Wayland equivalent of turning off the other screens.
 
 ## Features
 
