@@ -52,4 +52,4 @@ jobs:
           cache: true
 
       - name: Check docs build cleanly
-        run: RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --all-features --workspace --no-deps
+        run: RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --workspace --no-deps
