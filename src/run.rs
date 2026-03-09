@@ -1,4 +1,7 @@
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -37,9 +40,24 @@ where
     globals.bind::<P, _, _>(qh, 1..=1, ()).ok()
 }
 
+/// Poll the Wayland connection fd with a timeout.
+///
+/// Returns `true` if the fd is readable, `false` on timeout or error.
+fn poll_wayland_fd(fd: std::os::unix::io::BorrowedFd<'_>, timeout_ms: i32) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let mut pollfd = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+    ret > 0
+}
+
 pub(crate) fn run(
     config: ZenConfig,
     ready_tx: Option<mpsc::Sender<Result<(), String>>>,
+    shutdown: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(delay) = config.settle_delay {
         std::thread::sleep(delay);
@@ -250,19 +268,36 @@ pub(crate) fn run(
     // Steady state — toplevel Done handler starts cross-fade transitions
     let transition_tick = Duration::from_millis(8);
     while state.running {
+        if shutdown.load(Ordering::Acquire) {
+            state.running = false;
+            break;
+        }
+
         if state.is_transitioning() {
             state.tick_transition();
             event_queue.flush()?;
             event_queue.dispatch_pending(&mut state)?;
             std::thread::sleep(transition_tick);
         } else {
-            event_queue.blocking_dispatch(&mut state)?;
-            // Flush draws from event handlers (e.g. old monitor dim)
-            // blocking_dispatch flushes BEFORE dispatching, so anything
-            // enqueued during dispatch needs an explicit flush after.
+            // Poll-based dispatch: wait up to 100ms for events so we
+            // can periodically check the shutdown signal.
+            event_queue.flush()?;
+            if let Some(guard) = event_queue.prepare_read() {
+                let fd = guard.connection_fd();
+                if poll_wayland_fd(fd, 100) {
+                    if let Err(e) = guard.read() {
+                        state.running = false;
+                        return Err(e.into());
+                    }
+                }
+                // If poll timed out, guard is dropped which cancels the read.
+            }
+            event_queue.dispatch_pending(&mut state)?;
             event_queue.flush()?;
         }
     }
 
+    // Dropping state/surfaces/connection here cleans up Wayland
+    // resources: surfaces are destroyed and gamma ramps are restored.
     Ok(())
 }

@@ -1,5 +1,8 @@
 use std::collections::HashSet;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -100,12 +103,14 @@ impl ZenWindowBuilder {
     /// and restores gamma.
     pub fn spawn(self) -> Result<ZenWindow, Box<dyn std::error::Error + Send + Sync>> {
         let (ready_tx, ready_rx) = mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
 
         let handle = std::thread::Builder::new()
             .name("wl-zenwindow".into())
             .spawn({
                 let config = ZenConfig::from_builder(&self);
-                move || run(config, Some(ready_tx))
+                let shutdown = Arc::clone(&shutdown);
+                move || run(config, Some(ready_tx), shutdown)
             })?;
 
         match ready_rx.recv() {
@@ -116,6 +121,7 @@ impl ZenWindowBuilder {
 
         Ok(ZenWindow {
             _handle: Some(handle),
+            shutdown,
         })
     }
 
@@ -126,15 +132,21 @@ impl ZenWindowBuilder {
     ///
     /// Returns a [`ZenWindow`] handle. Dropping it removes overlays.
     pub fn spawn_nonblocking(self) -> ZenWindow {
+        let shutdown = Arc::new(AtomicBool::new(false));
+
         let handle = std::thread::Builder::new()
             .name("wl-zenwindow".into())
             .spawn({
                 let config = ZenConfig::from_builder(&self);
-                move || run(config, None)
+                let shutdown = Arc::clone(&shutdown);
+                move || run(config, None, shutdown)
             })
             .ok();
 
-        ZenWindow { _handle: handle }
+        ZenWindow {
+            _handle: handle,
+            shutdown,
+        }
     }
 }
 
@@ -144,12 +156,33 @@ impl ZenWindowBuilder {
 /// Dropping it disconnects from Wayland, removes overlays, and restores gamma.
 pub struct ZenWindow {
     _handle: Option<JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl ZenWindow {
     /// Create a new builder to configure which outputs to dim.
     pub fn builder() -> ZenWindowBuilder {
         ZenWindowBuilder::new()
+    }
+}
+
+impl Drop for ZenWindow {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        if let Some(handle) = self._handle.take() {
+            // Give the event loop time to notice the shutdown signal and clean up.
+            // The poll timeout in the event loop is 100ms, so 1 second is generous.
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while !handle.is_finished() {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if handle.is_finished() {
+                let _ = handle.join();
+            }
+        }
     }
 }
 
