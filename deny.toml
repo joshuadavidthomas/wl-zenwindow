@@ -2,21 +2,23 @@
 all-features = false
 
 [advisories]
-ignore = []
+ignore = [
+    # All unmaintained transitive deps of gpui (dev-dependency only).
+    # We don't control gpui's dependency tree.
+    "RUSTSEC-2024-0384", # instant (via fastrand -> futures-lite -> gpui_util)
+    "RUSTSEC-2024-0436", # paste (via metal/rav1e -> gpui)
+    "RUSTSEC-2025-0052", # async-std (via zed-async-tar -> gpui_http_client)
+    "RUSTSEC-2025-0134", # rustls-pemfile (via zed-reqwest -> gpui_http_client)
+]
 
 [licenses]
 allow = [
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
     "ISC",
-    "OFL-1.1",
     "Unicode-3.0",
-    "Ubuntu-font-1.0",
     "Zlib",
-    "MPL-2.0",
 ]
 
 [licenses.private]
