@@ -98,7 +98,7 @@ impl LayerShellHandler for ZenState {
             self.surfaces[idx].height = configure.new_size.1;
             self.surfaces[idx].configured = true;
 
-            let alpha = if self.surfaces[idx].is_backdrop {
+            let alpha = if self.surfaces[idx].is_backdrop() {
                 // Backdrops are always fully opaque
                 (self.target_opacity * 255.0) as u8
             } else if self.fading || self.is_skipped(idx) {
