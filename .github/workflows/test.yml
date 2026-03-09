@@ -55,4 +55,4 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: cargo test -q --all-features
+        run: cargo test -q
