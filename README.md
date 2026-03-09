@@ -14,6 +14,7 @@ Works with any compositor that supports `wlr-layer-shell`: Sway, Hyprland, Niri,
 
 ## Requirements
 
+- `libxkbcommon-dev` (or your distro's equivalent)
 - A Wayland compositor with `wlr-layer-shell-unstable-v1` support
 - `zwlr_foreign_toplevel_manager_v1` for focus tracking (optional, falls back to dimming all outputs)
 - `zwlr_gamma_control_v1` for brightness dimming (optional)
