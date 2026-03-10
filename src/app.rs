@@ -177,8 +177,7 @@ impl App {
     pub fn active_output_name(&self) -> Option<String> {
         self.toplevels
             .iter()
-            .find(|t| t.activated)
-            .and_then(|t| t.output.as_ref())
+            .find_map(|t| t.active_output())
             .and_then(|output| self.wl.output_state.info(output))
             .and_then(|info| info.name.clone())
     }
