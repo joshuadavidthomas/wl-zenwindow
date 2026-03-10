@@ -223,3 +223,120 @@ impl ZenConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_defaults() {
+        let b = ZenWindowBuilder::new();
+        assert!(b.skip_names.is_empty());
+        assert!(!b.skip_active);
+        assert_eq!(b.namespace, "wl-zenwindow");
+        assert!(b.settle_delay.is_none());
+        assert!(b.fade_duration.is_none());
+        assert_eq!(b.opacity, 1.0);
+        assert_eq!(b.color, [0, 0, 0]);
+        assert!(b.brightness.is_none());
+    }
+
+    #[test]
+    fn opacity_clamped_above() {
+        let b = ZenWindow::builder().opacity(1.5);
+        assert_eq!(b.opacity, 1.0);
+    }
+
+    #[test]
+    fn opacity_clamped_below() {
+        let b = ZenWindow::builder().opacity(-0.5);
+        assert_eq!(b.opacity, 0.0);
+    }
+
+    #[test]
+    fn opacity_within_range() {
+        let b = ZenWindow::builder().opacity(0.7);
+        assert!((b.opacity - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn brightness_clamped_above() {
+        let b = ZenWindow::builder().brightness(2.0);
+        assert_eq!(b.brightness, Some(1.0));
+    }
+
+    #[test]
+    fn brightness_clamped_below() {
+        let b = ZenWindow::builder().brightness(-1.0);
+        assert_eq!(b.brightness, Some(0.0));
+    }
+
+    #[test]
+    fn skip_output_accumulates() {
+        let b = ZenWindow::builder()
+            .skip_output("DP-1")
+            .skip_output("eDP-1");
+        assert!(b.skip_names.contains("DP-1"));
+        assert!(b.skip_names.contains("eDP-1"));
+        assert_eq!(b.skip_names.len(), 2);
+    }
+
+    #[test]
+    fn builder_chaining() {
+        let b = ZenWindow::builder()
+            .skip_active()
+            .namespace("custom")
+            .color(255, 0, 128)
+            .opacity(0.5)
+            .brightness(0.3)
+            .settle_delay(Duration::from_millis(200))
+            .fade_in(Duration::from_millis(500));
+
+        assert!(b.skip_active);
+        assert_eq!(b.namespace, "custom");
+        assert_eq!(b.color, [255, 0, 128]);
+        assert!((b.opacity - 0.5).abs() < f64::EPSILON);
+        assert_eq!(b.brightness, Some(0.3));
+        assert_eq!(b.settle_delay, Some(Duration::from_millis(200)));
+        assert_eq!(b.fade_duration, Some(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn config_from_builder_transfers_all_fields() {
+        let b = ZenWindow::builder()
+            .skip_output("HDMI-1")
+            .skip_active()
+            .namespace("test-ns")
+            .settle_delay(Duration::from_millis(100))
+            .fade_in(Duration::from_secs(1))
+            .opacity(0.8)
+            .color(10, 20, 30)
+            .brightness(0.6);
+
+        let config = ZenConfig::from_builder(&b);
+
+        assert!(config.skip_names.contains("HDMI-1"));
+        assert!(config.skip_active);
+        assert_eq!(config.namespace, "test-ns");
+        assert_eq!(config.settle_delay, Some(Duration::from_millis(100)));
+        assert_eq!(config.fade_duration, Some(Duration::from_secs(1)));
+        assert!((config.target_opacity - 0.8).abs() < f64::EPSILON);
+        assert_eq!(config.color, [10, 20, 30]);
+        assert_eq!(config.brightness, Some(0.6));
+    }
+
+    #[test]
+    fn config_from_builder_defaults() {
+        let b = ZenWindowBuilder::new();
+        let config = ZenConfig::from_builder(&b);
+
+        assert!(config.skip_names.is_empty());
+        assert!(!config.skip_active);
+        assert_eq!(config.namespace, "wl-zenwindow");
+        assert!(config.settle_delay.is_none());
+        assert!(config.fade_duration.is_none());
+        assert_eq!(config.target_opacity, 1.0);
+        assert_eq!(config.color, [0, 0, 0]);
+        assert!(config.brightness.is_none());
+    }
+}

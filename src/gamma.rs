@@ -95,3 +95,75 @@ impl Dispatch<ZwlrGammaControlV1, usize> for ZenState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+
+    use super::*;
+
+    fn read_ramp(size: u32, brightness: f64) -> Vec<u16> {
+        let mut file = create_gamma_ramp(size, brightness).unwrap();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).unwrap();
+        buf.chunks_exact(2)
+            .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+            .collect()
+    }
+
+    #[test]
+    fn gamma_ramp_size_one_full_brightness() {
+        let values = read_ramp(1, 1.0);
+        // 3 channels × 1 entry each
+        assert_eq!(values.len(), 3);
+        // i=0, divisor=max(0,1)=1 → 0/1 * 65535 = 0
+        assert!(values.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn gamma_ramp_zero_brightness() {
+        let values = read_ramp(256, 0.0);
+        assert_eq!(values.len(), 256 * 3);
+        assert!(values.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn gamma_ramp_full_brightness_linear() {
+        let values = read_ramp(256, 1.0);
+        assert_eq!(values.len(), 256 * 3);
+
+        // Each channel should be a linear ramp 0..65535
+        for channel in 0..3 {
+            let start = channel * 256;
+            assert_eq!(values[start], 0);
+            assert_eq!(values[start + 255], 65535);
+            // Monotonically increasing
+            for i in 1..256 {
+                assert!(values[start + i] >= values[start + i - 1]);
+            }
+        }
+    }
+
+    #[test]
+    fn gamma_ramp_half_brightness() {
+        let values = read_ramp(256, 0.5);
+        // Last entry of first channel: 65535 * 0.5 = 32767
+        assert_eq!(values[255], 32767);
+    }
+
+    #[test]
+    fn gamma_ramp_three_identical_channels() {
+        let values = read_ramp(256, 0.7);
+        let r = &values[0..256];
+        let g = &values[256..512];
+        let b = &values[512..768];
+        assert_eq!(r, g);
+        assert_eq!(g, b);
+    }
+
+    #[test]
+    fn gamma_ramp_size_zero() {
+        let values = read_ramp(0, 1.0);
+        assert!(values.is_empty());
+    }
+}
