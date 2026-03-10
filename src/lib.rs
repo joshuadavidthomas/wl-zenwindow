@@ -106,9 +106,9 @@
 //! ## Two surfaces per output
 //!
 //! Each output gets two layer-shell surfaces: an **overlay** on `Layer::Overlay`
-//! and a **backdrop** on `Layer::Bottom`. The overlay is the visible dim surface
+//! and a **backdrop** on `Layer::Top`. The overlay is the visible dim surface
 //! that participates in transitions and skip logic. The backdrop is always
-//! opaque black and sits behind everything.
+//! at the target opacity and sits above panels/waybar but below the overlay.
 //!
 //! The backdrop exists to prevent a flash of the desktop wallpaper. There's a
 //! brief window between when surfaces are created and when the
@@ -139,14 +139,12 @@
 //! When the [`ZenWindow`] handle is dropped, gamma ramps are automatically
 //! restored to their previous values.
 
+mod app;
+mod dim;
 mod error;
-mod gamma;
-mod handlers;
+mod render;
 mod run;
-mod state;
-mod surface;
-mod toplevel;
-mod transition;
+mod wayland;
 mod window;
 
 pub use error::SpawnError;

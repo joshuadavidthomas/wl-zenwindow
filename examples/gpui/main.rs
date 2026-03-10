@@ -23,7 +23,10 @@ use gpui::WindowOptions;
 
 actions!(gpui_example, [Quit]);
 
-struct ZenView;
+struct ZenView {
+    // Keep the zen handle alive for the lifetime of the view
+    _zen: wl_zenwindow::ZenWindow,
+}
 
 impl Render for ZenView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -64,17 +67,19 @@ fn main() {
                 show: true,
                 ..Default::default()
             },
-            |_window, cx| cx.new(|_cx| ZenView),
+            |_window, cx| {
+                let zen = wl_zenwindow::ZenWindow::builder()
+                    .namespace("wl-zenwindow-demo")
+                    .skip_active()
+                    .settle_delay(std::time::Duration::from_millis(200))
+                    .fade_in(std::time::Duration::from_millis(500))
+                    .spawn_nonblocking();
+
+                cx.new(|_cx| ZenView { _zen: zen })
+            },
         )
         .unwrap();
 
         cx.activate(true);
-
-        let _zen = wl_zenwindow::ZenWindow::builder()
-            .namespace("wl-zenwindow-demo")
-            .skip_active()
-            .settle_delay(std::time::Duration::from_millis(200))
-            .fade_in(std::time::Duration::from_millis(500))
-            .spawn_nonblocking();
     });
 }
