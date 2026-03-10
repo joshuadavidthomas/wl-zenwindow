@@ -212,7 +212,7 @@ impl CompositorHandler for App {
 
 impl OutputHandler for App {
     fn output_state(&mut self) -> &mut OutputState {
-        &mut self.wl.output_state
+        &mut self.wl_mut().output_state
     }
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
@@ -242,25 +242,25 @@ impl LayerShellHandler for App {
         _serial: u32,
     ) {
         let idx = self
-            .surfaces
+            .surfaces()
             .iter()
             .position(|s| s.layer.wl_surface() == layer.wl_surface());
 
         if let Some(idx) = idx {
-            self.surfaces[idx].configure = LayerShellHandshake::Ready {
+            self.surfaces_mut()[idx].configure = LayerShellHandshake::Ready {
                 width: configure.new_size.0,
                 height: configure.new_size.1,
             };
 
-            let output_name = self.surfaces[idx].output_name.clone();
+            let output_name = self.surfaces()[idx].output_name.clone();
 
-            if self.phase == AppPhase::FadingIn {
+            if self.phase() == AppPhase::FadingIn {
                 // During fade-in, both backdrops and overlays start transparent
                 // The fade loop will animate them together
             } else {
                 // In running state, draw based on dim state
                 if let Some(ref name) = output_name {
-                    if let Some(update) = self.dim.current_update(name) {
+                    if let Some(update) = self.dim().current_update(name) {
                         self.apply_output_update(name, update.opacity, update.brightness);
                     }
                 }
@@ -271,13 +271,13 @@ impl LayerShellHandler for App {
 
 impl ShmHandler for App {
     fn shm_state(&mut self) -> &mut Shm {
-        &mut self.wl.shm
+        &mut self.wl_mut().shm
     }
 }
 
 impl ProvidesRegistryState for App {
     fn registry(&mut self) -> &mut RegistryState {
-        &mut self.wl.registry
+        &mut self.wl_mut().registry
     }
 
     registry_handlers!(OutputState);
@@ -306,7 +306,7 @@ impl Dispatch<ZwlrGammaControlV1, usize> for App {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        let Some(surface) = state.surfaces.get_mut(*surface_idx) else {
+        let Some(surface) = state.surfaces_mut().get_mut(*surface_idx) else {
             return;
         };
 
@@ -334,7 +334,7 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for App {
         _qh: &QueueHandle<Self>,
     ) {
         if let zwlr_foreign_toplevel_manager_v1::Event::Finished = event {
-            state.wl.toplevel_manager = None;
+            state.wl_mut().toplevel_manager = None;
         }
     }
 
@@ -360,7 +360,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for App {
                 {
                     // Activated window is moving! Snap ALL overlays opaque immediately.
                     state.dim_all_outputs();
-                    state.dim.cancel_transition();
+                    state.dim_mut().cancel_transition();
                 }
 
                 state.find_or_insert_toplevel(proxy).enter_output(output);
@@ -372,7 +372,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for App {
                 {
                     // Activated window is leaving an output! Snap ALL overlays opaque.
                     state.dim_all_outputs();
-                    state.dim.cancel_transition();
+                    state.dim_mut().cancel_transition();
                 }
 
                 state.find_or_insert_toplevel(proxy).leave_output();

@@ -61,20 +61,74 @@ pub enum AppPhase {
 /// The main application state — Wayland dispatch target.
 pub struct App {
     /// Wayland protocol bindings.
-    pub wl: Wayland,
+    wl: Wayland,
     /// Configuration.
-    pub config: Config,
+    config: Config,
     /// Managed surfaces.
-    pub surfaces: Vec<Surface>,
+    surfaces: Vec<Surface>,
     /// Tracked toplevels for focus detection.
-    pub(crate) toplevels: Vec<TrackedToplevel>,
+    toplevels: Vec<TrackedToplevel>,
     /// Current loop phase.
-    pub phase: AppPhase,
+    phase: AppPhase,
     /// Dimming state machine.
-    pub dim: DimController,
+    dim: DimController,
 }
 
 impl App {
+    /// Create a new `App` with the given Wayland bindings, config, phase, and
+    /// dim controller. Surfaces and toplevels start empty — they're populated
+    /// during setup via protocol roundtrips and [`create_surfaces`](Self::create_surfaces).
+    pub fn new(wl: Wayland, config: Config, phase: AppPhase, dim: DimController) -> Self {
+        Self {
+            wl,
+            config,
+            surfaces: Vec::new(),
+            toplevels: Vec::new(),
+            phase,
+            dim,
+        }
+    }
+
+    /// Configuration (read-only).
+    pub(crate) fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Current loop phase.
+    pub(crate) fn phase(&self) -> AppPhase {
+        self.phase
+    }
+
+    /// Set the loop phase.
+    pub(crate) fn set_phase(&mut self, phase: AppPhase) {
+        self.phase = phase;
+    }
+
+    /// Wayland protocol bindings (mutable).
+    pub(crate) fn wl_mut(&mut self) -> &mut Wayland {
+        &mut self.wl
+    }
+
+    /// Managed surfaces (read-only).
+    pub(crate) fn surfaces(&self) -> &[Surface] {
+        &self.surfaces
+    }
+
+    /// Managed surfaces (mutable).
+    pub(crate) fn surfaces_mut(&mut self) -> &mut Vec<Surface> {
+        &mut self.surfaces
+    }
+
+    /// Dimming state machine (read-only).
+    pub(crate) fn dim(&self) -> &DimController {
+        &self.dim
+    }
+
+    /// Dimming state machine (mutable).
+    pub(crate) fn dim_mut(&mut self) -> &mut DimController {
+        &mut self.dim
+    }
+
     /// Create surfaces for all outputs.
     pub fn create_surfaces(&mut self, qh: &QueueHandle<Self>) {
         let outputs: Vec<_> = self.wl.output_state.outputs().collect();

@@ -122,14 +122,7 @@ pub(crate) fn run(
         toplevel_manager,
     };
 
-    let mut app = App {
-        wl,
-        config: config.clone(),
-        surfaces: Vec::new(),
-        toplevels: Vec::new(),
-        phase,
-        dim,
-    };
+    let mut app = App::new(wl, config.clone(), phase, dim);
 
     // Discover outputs and toplevels
     event_queue
@@ -161,15 +154,15 @@ pub(crate) fn run(
     // Fade-in uses the event queue directly (flush + dispatch_pending)
     // to avoid reading new events that could disturb DimController state
     // while the animation is running.
-    if let Some(duration) = app.config.fade_duration {
+    if let Some(duration) = app.config().fade_duration {
         run_fade_in(&mut app, &mut event_queue, duration)?;
     } else {
-        let updates = app.dim.snap_to_target();
+        let updates = app.dim_mut().snap_to_target();
         app.apply_updates(&updates);
     }
 
     // Hand the event queue to calloop for steady-state dispatch
-    app.phase = AppPhase::Running;
+    app.set_phase(AppPhase::Running);
     let mut event_loop: EventLoop<App> =
         EventLoop::try_new().map_err(|e| SpawnError::Setup(e.into()))?;
     WaylandSource::new(conn, event_queue)
@@ -197,7 +190,7 @@ fn run_fade_in(
 
     loop {
         let elapsed = start.elapsed();
-        let updates = app.dim.fade_in_frame(elapsed, duration);
+        let updates = app.dim_mut().fade_in_frame(elapsed, duration);
         // During fade-in, animate BOTH backdrop and overlay together
         app.apply_updates_all_layers(&updates);
 
@@ -230,9 +223,9 @@ fn run_steady_state(
     let animation_tick = Duration::from_millis(8);
     let idle_timeout = Duration::from_millis(100);
 
-    while app.phase == AppPhase::Running {
+    while app.phase() == AppPhase::Running {
         if shutdown.load(Ordering::Acquire) {
-            app.phase = AppPhase::ShuttingDown;
+            app.set_phase(AppPhase::ShuttingDown);
             break;
         }
 
