@@ -27,6 +27,7 @@ use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_manager
 
 use crate::error::SpawnError;
 use crate::state::OverlaySurface;
+use crate::state::SurfaceConfig;
 use crate::state::SurfaceRole;
 use crate::state::ZenState;
 use crate::transition::FadeIn;
@@ -196,9 +197,7 @@ pub(crate) fn run(
             gamma_control,
             gamma_size: None,
             buffer: None,
-            width: 0,
-            height: 0,
-            configured: false,
+            config: SurfaceConfig::Pending,
         });
 
         // Layer::Bottom backdrop — always opaque, prevents desktop flash
@@ -225,16 +224,18 @@ pub(crate) fn run(
             gamma_control: None,
             gamma_size: None,
             buffer: None,
-            width: 0,
-            height: 0,
-            configured: false,
+            config: SurfaceConfig::Pending,
         });
     }
 
     event_queue
         .roundtrip(&mut state)
         .map_err(|e| SpawnError::Setup(e.into()))?;
-    while state.surfaces.iter().any(|s| !s.configured) {
+    while state
+        .surfaces
+        .iter()
+        .any(|s| matches!(s.config, SurfaceConfig::Pending))
+    {
         event_queue
             .blocking_dispatch(&mut state)
             .map_err(|e| SpawnError::Setup(e.into()))?;

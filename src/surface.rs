@@ -15,10 +15,9 @@ pub(crate) fn premultiply_argb(r: u8, g: u8, b: u8, a: u8) -> u32 {
 impl ZenState {
     /// Draw a single surface at the given alpha (using viewporter if available).
     pub(crate) fn draw_surface_alpha(&mut self, idx: usize, alpha: u8) {
-        let surface = &self.surfaces[idx];
-        if !surface.configured || surface.width == 0 || surface.height == 0 {
+        let Some((width, height)) = self.surfaces[idx].config.dimensions() else {
             return;
-        }
+        };
 
         if self.viewporter.is_some() {
             let [r, g, b] = self.color;
@@ -32,7 +31,7 @@ impl ZenState {
 
             let surface = &mut self.surfaces[idx];
             if let Some(ref viewport) = surface.viewport {
-                viewport.set_destination(surface.width as i32, surface.height as i32);
+                viewport.set_destination(width as i32, height as i32);
             }
             surface
                 .layer
@@ -71,11 +70,11 @@ impl ZenState {
                 {
                     continue;
                 }
-                if !surface.configured || surface.width == 0 || surface.height == 0 {
+                let Some((width, height)) = surface.config.dimensions() else {
                     continue;
-                }
+                };
                 if let Some(ref viewport) = surface.viewport {
-                    viewport.set_destination(surface.width as i32, surface.height as i32);
+                    viewport.set_destination(width as i32, height as i32);
                 }
                 surface
                     .layer
@@ -99,13 +98,12 @@ impl ZenState {
     }
 
     pub(crate) fn draw_fullsize(&mut self, idx: usize, alpha: u8) {
-        let surface = &self.surfaces[idx];
-        if !surface.configured || surface.width == 0 || surface.height == 0 {
+        let Some((width, height)) = self.surfaces[idx].config.dimensions() else {
             return;
-        }
+        };
 
-        let w = surface.width as i32;
-        let h = surface.height as i32;
+        let w = width as i32;
+        let h = height as i32;
         let stride = w * 4;
         let [r, g, b] = self.color;
 

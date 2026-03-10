@@ -25,6 +25,7 @@ use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpA
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
+use crate::state::SurfaceConfig;
 use crate::state::ZenState;
 
 impl CompositorHandler for ZenState {
@@ -94,9 +95,10 @@ impl LayerShellHandler for ZenState {
             .position(|s| s.layer.wl_surface() == layer.wl_surface());
 
         if let Some(idx) = idx {
-            self.surfaces[idx].width = configure.new_size.0;
-            self.surfaces[idx].height = configure.new_size.1;
-            self.surfaces[idx].configured = true;
+            self.surfaces[idx].config = SurfaceConfig::Ready {
+                width: configure.new_size.0,
+                height: configure.new_size.1,
+            };
 
             let alpha = if self.surfaces[idx].is_backdrop() {
                 // Backdrops are always fully opaque
