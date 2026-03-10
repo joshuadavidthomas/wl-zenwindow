@@ -77,6 +77,9 @@ use crate::app::App;
 use crate::app::AppPhase;
 use crate::render::LayerShellHandshake;
 
+/// `zwlr_foreign_toplevel_handle_v1` state value for an activated toplevel.
+const TOPLEVEL_STATE_ACTIVATED: u32 = 2;
+
 /// Wayland protocol state — all the compositor bindings.
 pub struct Wayland {
     pub registry: RegistryState,
@@ -339,7 +342,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for App {
                 let activated = raw_state
                     .chunks_exact(4)
                     .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-                    .any(|s| s == 2); // 2 = activated
+                    .any(|s| s == TOPLEVEL_STATE_ACTIVATED);
 
                 find_or_insert_toplevel(&mut state.toplevels, proxy).activated = activated;
             }
