@@ -24,6 +24,30 @@ pub(crate) struct TrackedToplevel {
     pub(crate) output: Option<wl_output::WlOutput>,
 }
 
+/// What changed when the active output moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputChange {
+    /// The output that lost focus and should be dimmed.
+    pub(crate) dim_output: Option<String>,
+    /// The output that gained focus and should be revealed.
+    pub(crate) reveal_output: Option<String>,
+}
+
+/// Pure decision: given old and new active output names, determine what
+/// changed. Returns `None` if nothing changed (same output or both `None`).
+pub(crate) fn detect_output_change(
+    old_active: Option<&str>,
+    new_active: Option<&str>,
+) -> Option<OutputChange> {
+    if old_active == new_active {
+        return None;
+    }
+    Some(OutputChange {
+        dim_output: old_active.map(str::to_owned),
+        reveal_output: new_active.map(str::to_owned),
+    })
+}
+
 impl ZenState {
     pub(crate) fn active_output_name(&self) -> Option<String> {
         self.toplevels
@@ -41,20 +65,21 @@ impl ZenState {
         }
 
         let new_active = self.active_output_name();
-        if new_active == self.active_output {
-            return;
-        }
+        let change =
+            match detect_output_change(self.active_output.as_deref(), new_active.as_deref()) {
+                Some(c) => c,
+                None => return,
+            };
 
-        let old_active = self.active_output.take();
         self.active_output = new_active.clone();
 
         // Immediately dim the old monitor's overlay
-        if let Some(ref name) = old_active {
+        if let Some(ref name) = change.dim_output {
             for idx in 0..self.surfaces.len() {
                 if self.surfaces[idx].is_backdrop() {
                     continue;
                 }
-                if self.surfaces[idx].output_name.as_deref() == Some(name) {
+                if self.surfaces[idx].output_name.as_deref() == Some(name.as_str()) {
                     let alpha = (self.target_opacity * 255.0) as u8;
                     self.draw_surface_alpha(idx, alpha);
                 }
@@ -66,7 +91,7 @@ impl ZenState {
             start: Instant::now(),
             delay: Duration::from_millis(325),
             duration: Duration::from_millis(150),
-            revealing: new_active,
+            revealing: change.reveal_output,
         });
     }
 }
@@ -211,5 +236,48 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ZenState {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_change_when_both_none() {
+        assert_eq!(detect_output_change(None, None), None);
+    }
+
+    #[test]
+    fn no_change_when_same_output() {
+        assert_eq!(detect_output_change(Some("DP-1"), Some("DP-1")), None);
+    }
+
+    #[test]
+    fn change_from_none_to_some() {
+        let change = detect_output_change(None, Some("DP-1")).unwrap();
+        assert_eq!(change.dim_output, None);
+        assert_eq!(change.reveal_output, Some("DP-1".to_string()));
+    }
+
+    #[test]
+    fn change_from_some_to_none() {
+        let change = detect_output_change(Some("DP-1"), None).unwrap();
+        assert_eq!(change.dim_output, Some("DP-1".to_string()));
+        assert_eq!(change.reveal_output, None);
+    }
+
+    #[test]
+    fn change_between_two_outputs() {
+        let change = detect_output_change(Some("DP-1"), Some("HDMI-1")).unwrap();
+        assert_eq!(change.dim_output, Some("DP-1".to_string()));
+        assert_eq!(change.reveal_output, Some("HDMI-1".to_string()));
+    }
+
+    #[test]
+    fn change_preserves_output_names() {
+        let change = detect_output_change(Some("eDP-1"), Some("DP-2")).unwrap();
+        assert_eq!(change.dim_output.as_deref(), Some("eDP-1"));
+        assert_eq!(change.reveal_output.as_deref(), Some("DP-2"));
     }
 }
