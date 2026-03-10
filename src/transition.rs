@@ -65,3 +65,43 @@ impl ZenState {
         !done
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ease_out_quad_at_zero() {
+        assert!((ease_out_quad(0.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ease_out_quad_at_one() {
+        assert!((ease_out_quad(1.0) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ease_out_quad_at_half() {
+        // 1 - (1 - 0.5)^2 = 1 - 0.25 = 0.75
+        assert!((ease_out_quad(0.5) - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ease_out_quad_at_quarter() {
+        // 1 - (1 - 0.25)^2 = 1 - 0.5625 = 0.4375
+        assert!((ease_out_quad(0.25) - 0.4375).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ease_out_quad_is_monotonic() {
+        let steps: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).collect();
+        for pair in steps.windows(2) {
+            assert!(
+                ease_out_quad(pair[1]) >= ease_out_quad(pair[0]),
+                "ease_out_quad({}) < ease_out_quad({})",
+                pair[1],
+                pair[0],
+            );
+        }
+    }
+}

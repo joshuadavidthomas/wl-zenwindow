@@ -131,3 +131,45 @@ impl ZenState {
         surface.buffer = Some(buffer);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn premultiply_fully_opaque() {
+        assert_eq!(premultiply_argb(255, 128, 0, 255), 0xFF_FF_80_00);
+    }
+
+    #[test]
+    fn premultiply_fully_transparent() {
+        assert_eq!(premultiply_argb(255, 255, 255, 0), 0x00_00_00_00);
+    }
+
+    #[test]
+    fn premultiply_half_alpha() {
+        let result = premultiply_argb(255, 0, 0, 128);
+        let r = (result >> 16) & 0xFF;
+        let a = (result >> 24) & 0xFF;
+        assert_eq!(a, 128);
+        // 255 * 128 / 255 ≈ 128, with rounding: (255*128+127)/255 = 128
+        assert_eq!(r, 128);
+    }
+
+    #[test]
+    fn premultiply_all_max() {
+        assert_eq!(premultiply_argb(255, 255, 255, 255), 0xFF_FF_FF_FF);
+    }
+
+    #[test]
+    fn premultiply_all_zero() {
+        assert_eq!(premultiply_argb(0, 0, 0, 0), 0x00_00_00_00);
+    }
+
+    #[test]
+    fn premultiply_channel_order() {
+        // With full alpha, channels pass through unchanged
+        let result = premultiply_argb(0xAA, 0xBB, 0xCC, 0xFF);
+        assert_eq!(result, 0xFF_AA_BB_CC);
+    }
+}
