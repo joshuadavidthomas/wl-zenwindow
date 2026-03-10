@@ -14,7 +14,7 @@
 //!
 //! - **`FadingIn`** — Initial animation. Both backdrops and overlays animate
 //!   from transparent to target together.
-//! - **Running** — Steady state. Only overlays participate in focus
+//! - **`Running`** — Steady state. Only overlays participate in focus
 //!   transitions; backdrops stay at target opacity as a safety net.
 //! - **`ShuttingDown`** — Cleanup.
 //!
