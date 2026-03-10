@@ -75,8 +75,7 @@ use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_v1::{
 
 use crate::app::App;
 use crate::app::AppPhase;
-use crate::render::GammaState;
-use crate::render::SurfaceConfig;
+use crate::render::LayerShellHandshake;
 
 /// Wayland protocol state — all the compositor bindings.
 pub struct Wayland {
@@ -201,7 +200,7 @@ impl LayerShellHandler for App {
             .position(|s| s.layer.wl_surface() == layer.wl_surface());
 
         if let Some(idx) = idx {
-            self.surfaces[idx].config = SurfaceConfig::Ready {
+            self.surfaces[idx].configure = LayerShellHandshake::Ready {
                 width: configure.new_size.0,
                 height: configure.new_size.1,
             };
@@ -215,7 +214,7 @@ impl LayerShellHandler for App {
                 // In running state, draw based on dim state
                 if let Some(ref name) = output_name {
                     if let Some(update) = self.dim.current_update(name) {
-                        self.apply_output_update(name, update.alpha, update.brightness);
+                        self.apply_output_update(name, update.opacity, update.brightness);
                     }
                 }
             }
@@ -260,20 +259,16 @@ impl Dispatch<ZwlrGammaControlV1, usize> for App {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        let Some(surface) = state.surfaces.get_mut(*surface_idx) else {
+            return;
+        };
+
         match event {
             zwlr_gamma_control_v1::Event::GammaSize { size } => {
-                if let Some(surface) = state.surfaces.get_mut(*surface_idx) {
-                    if let GammaState::Pending(control) =
-                        std::mem::replace(&mut surface.gamma, GammaState::Unavailable)
-                    {
-                        surface.gamma = GammaState::Ready { control, size };
-                    }
-                }
+                surface.gamma.receive_size(size);
             }
             zwlr_gamma_control_v1::Event::Failed => {
-                if let Some(surface) = state.surfaces.get_mut(*surface_idx) {
-                    surface.gamma = GammaState::Unavailable;
-                }
+                surface.gamma.fail();
             }
             _ => {}
         }

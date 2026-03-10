@@ -148,5 +148,8 @@ mod wayland;
 mod window;
 
 pub use error::SpawnError;
+pub use render::Brightness;
+pub use render::Color;
+pub use render::Opacity;
 pub use window::ZenWindow;
 pub use window::ZenWindowBuilder;

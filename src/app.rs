@@ -28,7 +28,6 @@
 
 use smithay_client_toolkit::shell::wlr_layer::Anchor;
 use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
-use smithay_client_toolkit::shell::wlr_layer::Layer;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use smithay_client_toolkit::shell::WaylandSurface;
 use wayland_client::protocol::wl_output::WlOutput;
@@ -36,12 +35,11 @@ use wayland_client::QueueHandle;
 
 use crate::dim::DimController;
 use crate::dim::DimUpdates;
-use crate::render::alpha_to_u8;
-use crate::render::draw_surface;
-use crate::render::update_gamma;
+use crate::render::Brightness;
 use crate::render::GammaState;
+use crate::render::LayerShellHandshake;
+use crate::render::Opacity;
 use crate::render::Surface;
-use crate::render::SurfaceConfig;
 use crate::render::SurfaceRole;
 use crate::wayland::TrackedToplevel;
 use crate::wayland::Wayland;
@@ -116,15 +114,10 @@ impl App {
             .as_ref()
             .map(|vp| vp.get_viewport(&wl_surface, qh, ()));
 
-        let layer = match role {
-            SurfaceRole::Backdrop => Layer::Top,
-            SurfaceRole::Overlay => Layer::Overlay,
-        };
-
         let layer_surface = self.wl.layer_shell.create_layer_surface(
             qh,
             wl_surface,
-            layer,
+            role.into(),
             Some(self.config.namespace.clone()),
             Some(output),
         );
@@ -169,7 +162,7 @@ impl App {
             alpha_modifier,
             gamma,
             buffer: None,
-            config: SurfaceConfig::Pending,
+            configure: LayerShellHandshake::Pending,
         });
     }
 
@@ -177,7 +170,7 @@ impl App {
     pub fn all_surfaces_configured(&self) -> bool {
         self.surfaces
             .iter()
-            .all(|s| !matches!(s.config, SurfaceConfig::Pending))
+            .all(|s| !matches!(s.configure, LayerShellHandshake::Pending))
     }
 
     /// Get the currently active output name from toplevel tracking.
@@ -193,23 +186,22 @@ impl App {
     /// Apply dimming updates to overlay surfaces only.
     pub fn apply_updates(&mut self, updates: &DimUpdates) {
         for update in updates.iter() {
-            self.apply_output_update(&update.name, update.alpha, update.brightness);
+            self.apply_output_update(&update.name, update.opacity, update.brightness);
         }
     }
 
     /// Apply a single output update to its overlay surface.
-    pub fn apply_output_update(&mut self, name: &str, alpha: f64, brightness: f64) {
+    pub fn apply_output_update(&mut self, name: &str, opacity: Opacity, brightness: Brightness) {
         let has_viewporter = self.wl.has_viewporter();
         let color = self.config.color;
-        let alpha_u8 = alpha_to_u8(alpha);
 
         if let Some(surface) = self
             .surfaces
             .iter_mut()
             .find(|s| s.output_name.as_deref() == Some(name) && s.role == SurfaceRole::Overlay)
         {
-            draw_surface(surface, &mut self.wl.pool, color, alpha_u8, has_viewporter);
-            update_gamma(surface, brightness);
+            surface.draw(&mut self.wl.pool, color, opacity, has_viewporter);
+            surface.update_gamma(brightness);
         }
     }
 
@@ -219,27 +211,25 @@ impl App {
         let color = self.config.color;
 
         for update in updates.iter() {
-            let alpha = alpha_to_u8(update.alpha);
-
             for surface in &mut self.surfaces {
                 if surface.output_name.as_deref() != Some(&update.name) {
                     continue;
                 }
-                draw_surface(surface, &mut self.wl.pool, color, alpha, has_viewporter);
-                update_gamma(surface, update.brightness);
+                surface.draw(&mut self.wl.pool, color, update.opacity, has_viewporter);
+                surface.update_gamma(update.brightness);
             }
         }
     }
 
     /// Snap all backdrops to `target_opacity` (called after fade-in).
     pub fn snap_backdrops_to_target(&mut self) {
-        let alpha = alpha_to_u8(self.config.target_opacity);
         let has_viewporter = self.wl.has_viewporter();
         let color = self.config.color;
+        let opacity = self.config.target_opacity;
 
         for surface in &mut self.surfaces {
             if surface.role == SurfaceRole::Backdrop {
-                draw_surface(surface, &mut self.wl.pool, color, alpha, has_viewporter);
+                surface.draw(&mut self.wl.pool, color, opacity, has_viewporter);
             }
         }
     }
