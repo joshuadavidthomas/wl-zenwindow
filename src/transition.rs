@@ -29,6 +29,48 @@ pub(crate) fn ease_out_quad(t: f64) -> f64 {
     1.0 - (1.0 - t) * (1.0 - t)
 }
 
+/// Initial fade-in animation parameters.
+///
+/// Computes per-frame alpha and brightness values from elapsed time,
+/// without touching any Wayland state.
+pub(crate) struct FadeIn {
+    pub(crate) duration: Duration,
+    pub(crate) target_opacity: f64,
+    pub(crate) target_brightness: f64,
+}
+
+/// Values for a single frame of the fade-in animation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FadeFrame {
+    /// Alpha as a u8 (0–255) for the software rendering path.
+    pub(crate) alpha: u8,
+    /// Alpha as a u32 multiplier (0–u32::MAX) for the alpha-modifier protocol.
+    pub(crate) multiplier: u32,
+    /// Current brightness (1.0 = full, interpolated toward target).
+    pub(crate) brightness: f64,
+    /// Whether the animation is complete (t ≥ 1.0).
+    pub(crate) done: bool,
+}
+
+impl FadeIn {
+    /// Compute the frame values at a given elapsed time.
+    pub(crate) fn frame_at(&self, elapsed: Duration) -> FadeFrame {
+        let t = (elapsed.as_secs_f64() / self.duration.as_secs_f64()).min(1.0);
+        let eased = ease_out_quad(t);
+
+        let alpha = (eased * self.target_opacity * 255.0) as u8;
+        let multiplier = (eased * self.target_opacity * u32::MAX as f64) as u32;
+        let brightness = 1.0 - eased * (1.0 - self.target_brightness);
+
+        FadeFrame {
+            alpha,
+            multiplier,
+            brightness,
+            done: t >= 1.0,
+        }
+    }
+}
+
 impl Transition {
     /// Pure computation: given elapsed time and target opacity, return what
     /// the caller should do (wait, draw at alpha, or finish).
@@ -231,5 +273,146 @@ mod tests {
         };
         let tick = t.tick(Duration::ZERO, 1.0);
         assert!(matches!(tick, TransitionTick::Fading { alpha: 255 }));
+    }
+
+    fn test_fade_in() -> FadeIn {
+        FadeIn {
+            duration: Duration::from_millis(500),
+            target_opacity: 1.0,
+            target_brightness: 1.0,
+        }
+    }
+
+    #[test]
+    fn fade_in_at_zero_all_transparent() {
+        let fade = test_fade_in();
+        let frame = fade.frame_at(Duration::ZERO);
+        assert_eq!(frame.alpha, 0);
+        assert_eq!(frame.multiplier, 0);
+        assert!((frame.brightness - 1.0).abs() < f64::EPSILON);
+        assert!(!frame.done);
+    }
+
+    #[test]
+    fn fade_in_at_end_fully_opaque() {
+        let fade = test_fade_in();
+        let frame = fade.frame_at(Duration::from_millis(500));
+        assert_eq!(frame.alpha, 255);
+        assert_eq!(frame.multiplier, u32::MAX);
+        assert!((frame.brightness - 1.0).abs() < f64::EPSILON);
+        assert!(frame.done);
+    }
+
+    #[test]
+    fn fade_in_past_end_clamps() {
+        let fade = test_fade_in();
+        let frame = fade.frame_at(Duration::from_secs(5));
+        assert_eq!(frame.alpha, 255);
+        assert!(frame.done);
+    }
+
+    #[test]
+    fn fade_in_midway() {
+        let fade = test_fade_in();
+        // t=0.5, eased=0.75
+        let frame = fade.frame_at(Duration::from_millis(250));
+        // alpha = 0.75 * 1.0 * 255 = 191
+        assert_eq!(frame.alpha, 191);
+        assert!(!frame.done);
+    }
+
+    #[test]
+    fn fade_in_respects_target_opacity() {
+        let fade = FadeIn {
+            duration: Duration::from_millis(500),
+            target_opacity: 0.5,
+            target_brightness: 1.0,
+        };
+        // At end: alpha = 1.0 * 0.5 * 255 = 127
+        let frame = fade.frame_at(Duration::from_millis(500));
+        assert_eq!(frame.alpha, 127);
+        assert!(frame.done);
+    }
+
+    #[test]
+    fn fade_in_multiplier_respects_opacity() {
+        let fade = FadeIn {
+            duration: Duration::from_millis(500),
+            target_opacity: 0.5,
+            target_brightness: 1.0,
+        };
+        // At end: multiplier = 1.0 * 0.5 * u32::MAX
+        let frame = fade.frame_at(Duration::from_millis(500));
+        let expected = (0.5 * u32::MAX as f64) as u32;
+        assert_eq!(frame.multiplier, expected);
+    }
+
+    #[test]
+    fn fade_in_brightness_interpolation() {
+        let fade = FadeIn {
+            duration: Duration::from_millis(500),
+            target_opacity: 1.0,
+            target_brightness: 0.4,
+        };
+        // At t=0: brightness = 1.0 (no dimming yet)
+        let frame0 = fade.frame_at(Duration::ZERO);
+        assert!((frame0.brightness - 1.0).abs() < f64::EPSILON);
+
+        // At t=1: brightness = 1.0 - 1.0 * (1.0 - 0.4) = 0.4
+        let frame_end = fade.frame_at(Duration::from_millis(500));
+        assert!((frame_end.brightness - 0.4).abs() < f64::EPSILON);
+
+        // At t=0.5 (eased=0.75): brightness = 1.0 - 0.75 * 0.6 = 0.55
+        let frame_mid = fade.frame_at(Duration::from_millis(250));
+        assert!((frame_mid.brightness - 0.55).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fade_in_alpha_increases_over_time() {
+        let fade = test_fade_in();
+        let mut prev_alpha = 0u8;
+        for ms in (0..=500).step_by(10) {
+            let frame = fade.frame_at(Duration::from_millis(ms));
+            assert!(
+                frame.alpha >= prev_alpha,
+                "alpha decreased at {ms}ms: {} < {prev_alpha}",
+                frame.alpha,
+            );
+            prev_alpha = frame.alpha;
+        }
+        assert_eq!(prev_alpha, 255);
+    }
+
+    #[test]
+    fn fade_in_brightness_decreases_toward_target() {
+        let fade = FadeIn {
+            duration: Duration::from_millis(500),
+            target_opacity: 1.0,
+            target_brightness: 0.3,
+        };
+        let mut prev_brightness = 1.0f64;
+        for ms in (0..=500).step_by(10) {
+            let frame = fade.frame_at(Duration::from_millis(ms));
+            assert!(
+                frame.brightness <= prev_brightness + f64::EPSILON,
+                "brightness increased at {ms}ms: {} > {prev_brightness}",
+                frame.brightness,
+            );
+            prev_brightness = frame.brightness;
+        }
+        assert!((prev_brightness - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fade_in_full_brightness_stays_at_one() {
+        let fade = test_fade_in();
+        for ms in (0..=500).step_by(50) {
+            let frame = fade.frame_at(Duration::from_millis(ms));
+            assert!(
+                (frame.brightness - 1.0).abs() < f64::EPSILON,
+                "brightness != 1.0 at {ms}ms: {}",
+                frame.brightness,
+            );
+        }
     }
 }

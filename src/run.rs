@@ -29,7 +29,7 @@ use crate::error::SpawnError;
 use crate::state::OverlaySurface;
 use crate::state::SurfaceRole;
 use crate::state::ZenState;
-use crate::transition::ease_out_quad;
+use crate::transition::FadeIn;
 use crate::window::ZenConfig;
 
 fn try_bind<P: wayland_client::Proxy + 'static>(
@@ -247,30 +247,33 @@ pub(crate) fn run(
     if let Some(duration) = config.fade_duration {
         let start = Instant::now();
         let tick = Duration::from_millis(8);
-        let target_brightness = brightness.unwrap_or(1.0);
+        let fade_in = FadeIn {
+            duration,
+            target_opacity,
+            target_brightness: brightness.unwrap_or(1.0),
+        };
 
         loop {
-            let elapsed = start.elapsed();
-            let t = (elapsed.as_secs_f64() / duration.as_secs_f64()).min(1.0);
-            let eased = ease_out_quad(t);
+            let frame = fade_in.frame_at(start.elapsed());
 
             if has_alpha_mod {
-                let multiplier = (eased * target_opacity * u32::MAX as f64) as u32;
                 for (idx, surface) in state.surfaces.iter().enumerate() {
                     if let Some(ref alpha_surf) = surface.alpha_surface {
-                        let m = if state.is_skipped(idx) { 0 } else { multiplier };
+                        let m = if state.is_skipped(idx) {
+                            0
+                        } else {
+                            frame.multiplier
+                        };
                         alpha_surf.set_multiplier(m);
                     }
                     surface.layer.commit();
                 }
             } else {
-                let alpha = (eased * target_opacity * 255.0) as u8;
-                state.draw_dimmed(alpha);
+                state.draw_dimmed(frame.alpha);
             }
 
             if brightness.is_some() {
-                let current_brightness = 1.0 - eased * (1.0 - target_brightness);
-                state.set_gamma_dimmed(current_brightness);
+                state.set_gamma_dimmed(frame.brightness);
             }
 
             event_queue
@@ -280,7 +283,7 @@ pub(crate) fn run(
                 .dispatch_pending(&mut state)
                 .map_err(|e| SpawnError::Setup(e.into()))?;
 
-            if t >= 1.0 {
+            if frame.done {
                 break;
             }
 
