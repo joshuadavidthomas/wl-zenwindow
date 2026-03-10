@@ -45,14 +45,17 @@ where
 ///
 /// Returns `true` if the fd is readable, `false` on timeout or error.
 fn poll_wayland_fd(fd: std::os::unix::io::BorrowedFd<'_>, timeout_ms: i32) -> bool {
-    use std::os::unix::io::AsRawFd;
-    let mut pollfd = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
+    use rustix::event::poll;
+    use rustix::event::PollFd;
+    use rustix::event::PollFlags;
+    use rustix::time::Timespec;
+
+    let timeout = Timespec {
+        tv_sec: i64::from(timeout_ms) / 1000,
+        tv_nsec: (i64::from(timeout_ms) % 1000) * 1_000_000,
     };
-    let ret = unsafe { libc::poll(&raw mut pollfd, 1, timeout_ms) };
-    ret > 0
+    let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+    poll(&mut fds, Some(&timeout)).unwrap_or(0) > 0
 }
 
 /// Entry point for the background thread that manages overlay surfaces.

@@ -41,7 +41,6 @@
 use std::io::Seek;
 use std::io::Write;
 use std::os::fd::AsFd;
-use std::os::fd::FromRawFd;
 
 use smithay_client_toolkit::shell::wlr_layer::Layer;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
@@ -446,13 +445,8 @@ fn premultiply_argb(color: Color, alpha: u8) -> u32 {
     clippy::cast_sign_loss            // Values are always positive
 )]
 fn create_gamma_ramp(size: u32, brightness: f64) -> std::io::Result<std::fs::File> {
-    let name = std::ffi::CString::new("wl-zenwindow-gamma").unwrap();
-    let raw_fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
-    if raw_fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    let mut file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
+    let fd = rustix::fs::memfd_create("wl-zenwindow-gamma", rustix::fs::MemfdFlags::CLOEXEC)?;
+    let mut file = std::fs::File::from(fd);
     let n = size as usize;
     let divisor = n.saturating_sub(1).max(1) as f64;
 
