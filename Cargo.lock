@@ -6796,6 +6796,7 @@ dependencies = [
 name = "wl-zenwindow"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "gpui",
  "libc",
  "smithay-client-toolkit",
