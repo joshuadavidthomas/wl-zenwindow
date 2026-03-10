@@ -9,6 +9,8 @@ use std::time::Instant;
 
 use smithay_client_toolkit::compositor::CompositorState;
 use smithay_client_toolkit::output::OutputState;
+use smithay_client_toolkit::reexports::calloop::EventLoop;
+use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::RegistryState;
 use smithay_client_toolkit::shell::wlr_layer::LayerShell;
 use smithay_client_toolkit::shm::slot::SlotPool;
@@ -39,23 +41,6 @@ where
     App: Dispatch<P, ()>,
 {
     globals.bind::<P, _, _>(qh, 1..=1, ()).ok()
-}
-
-/// Poll the Wayland connection fd with a timeout.
-///
-/// Returns `true` if the fd is readable, `false` on timeout or error.
-fn poll_wayland_fd(fd: std::os::unix::io::BorrowedFd<'_>, timeout_ms: i32) -> bool {
-    use rustix::event::poll;
-    use rustix::event::PollFd;
-    use rustix::event::PollFlags;
-    use rustix::time::Timespec;
-
-    let timeout = Timespec {
-        tv_sec: i64::from(timeout_ms) / 1000,
-        tv_nsec: (i64::from(timeout_ms) % 1000) * 1_000_000,
-    };
-    let mut fds = [PollFd::new(&fd, PollFlags::IN)];
-    poll(&mut fds, Some(&timeout)).unwrap_or(0) > 0
 }
 
 /// Entry point for the background thread that manages overlay surfaces.
@@ -172,7 +157,10 @@ pub(crate) fn run(
         tx.send(()).ok();
     }
 
-    // Run fade-in if configured, otherwise snap to target
+    // Run fade-in if configured, otherwise snap to target.
+    // Fade-in uses the event queue directly (flush + dispatch_pending)
+    // to avoid reading new events that could disturb DimController state
+    // while the animation is running.
     if let Some(duration) = app.config.fade_duration {
         run_fade_in(&mut app, &mut event_queue, duration)?;
     } else {
@@ -180,13 +168,25 @@ pub(crate) fn run(
         app.apply_updates(&updates);
     }
 
-    // Steady state
+    // Hand the event queue to calloop for steady-state dispatch
     app.phase = AppPhase::Running;
-    run_steady_state(&mut app, &mut event_queue, shutdown)?;
+    let mut event_loop: EventLoop<App> =
+        EventLoop::try_new().map_err(|e| SpawnError::Setup(e.into()))?;
+    WaylandSource::new(conn, event_queue)
+        .insert(event_loop.handle())
+        .map_err(|e| SpawnError::Setup(e.error.into()))?;
+
+    run_steady_state(&mut app, &mut event_loop, shutdown)?;
 
     Ok(())
 }
 
+/// Run the initial fade-in animation.
+///
+/// Uses the event queue directly rather than calloop — `dispatch_pending`
+/// processes only already-buffered events without reading new ones from
+/// the compositor, which prevents transient focus events (from the window
+/// settling) from disturbing the animation.
 fn run_fade_in(
     app: &mut App,
     event_queue: &mut wayland_client::EventQueue<App>,
@@ -224,10 +224,11 @@ fn run_fade_in(
 
 fn run_steady_state(
     app: &mut App,
-    event_queue: &mut wayland_client::EventQueue<App>,
+    event_loop: &mut EventLoop<App>,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<(), SpawnError> {
-    let transition_tick = Duration::from_millis(8);
+    let animation_tick = Duration::from_millis(8);
+    let idle_timeout = Duration::from_millis(100);
 
     while app.phase == AppPhase::Running {
         if shutdown.load(Ordering::Acquire) {
@@ -235,36 +236,16 @@ fn run_steady_state(
             break;
         }
 
-        if app.is_animating() {
+        let timeout = if app.is_animating() {
             app.tick_transition();
-            event_queue
-                .flush()
-                .map_err(|e| SpawnError::Setup(e.into()))?;
-            event_queue
-                .dispatch_pending(app)
-                .map_err(|e| SpawnError::Setup(e.into()))?;
-            std::thread::sleep(transition_tick);
+            animation_tick
         } else {
-            // Poll-based dispatch with timeout for shutdown checks
-            event_queue
-                .flush()
-                .map_err(|e| SpawnError::Setup(e.into()))?;
-            if let Some(guard) = event_queue.prepare_read() {
-                let fd = guard.connection_fd();
-                if poll_wayland_fd(fd, 100) {
-                    if let Err(e) = guard.read() {
-                        app.phase = AppPhase::ShuttingDown;
-                        return Err(SpawnError::Setup(e.into()));
-                    }
-                }
-            }
-            event_queue
-                .dispatch_pending(app)
-                .map_err(|e| SpawnError::Setup(e.into()))?;
-            event_queue
-                .flush()
-                .map_err(|e| SpawnError::Setup(e.into()))?;
-        }
+            idle_timeout
+        };
+
+        event_loop
+            .dispatch(timeout, app)
+            .map_err(|e| SpawnError::Setup(e.into()))?;
     }
 
     Ok(())
