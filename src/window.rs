@@ -257,7 +257,8 @@ impl Drop for ZenWindow {
         self.shutdown.store(true, Ordering::Release);
         if let Some(handle) = self.handle.take() {
             // Give the event loop time to notice the shutdown signal and clean up.
-            // The poll timeout in the event loop is 100ms, so 1 second is generous.
+            // The calloop dispatch timeout in the event loop is 100ms, so 1 second
+            // is generous.
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
             while !handle.is_finished() {
                 if std::time::Instant::now() >= deadline {

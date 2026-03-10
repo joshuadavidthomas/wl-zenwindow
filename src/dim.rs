@@ -144,8 +144,7 @@ impl DimController {
     }
 
     /// Check if an output is currently skipped.
-    #[cfg(test)]
-    pub fn is_skipped(&self, name: &str) -> bool {
+    pub fn is_output_skipped(&self, name: &str) -> bool {
         self.outputs.get(name).is_some_and(|s| s.skipped)
     }
 
@@ -354,7 +353,7 @@ mod tests {
         let mut ctrl = DimController::new(0.8, Some(0.5), true);
         ctrl.add_output("DP-1".into(), true);
 
-        assert!(ctrl.is_skipped("DP-1"));
+        assert!(ctrl.is_output_skipped("DP-1"));
         assert_eq!(ctrl.active_output(), Some("DP-1"));
     }
 
@@ -377,8 +376,8 @@ mod tests {
         assert_eq!(updates[0].brightness.as_f64(), 0.5);
 
         // DP-2 should now be skipped, transition started
-        assert!(ctrl.is_skipped("DP-2"));
-        assert!(!ctrl.is_skipped("DP-1"));
+        assert!(ctrl.is_output_skipped("DP-2"));
+        assert!(!ctrl.is_output_skipped("DP-1"));
         assert!(ctrl.is_animating());
     }
 

@@ -205,11 +205,19 @@ impl App {
     }
 
     /// Apply dimming updates to BOTH backdrop and overlay (for fade-in).
+    ///
+    /// Skipped (active) outputs are left alone — both backdrop and overlay
+    /// stay transparent so the focused window is fully visible during the
+    /// fade-in animation.
     pub fn apply_updates_all_layers(&mut self, updates: &DimUpdates) {
         let has_viewporter = self.wl.has_viewporter();
         let color = self.config.color;
 
         for update in updates.iter() {
+            if self.dim.is_output_skipped(&update.name) {
+                continue;
+            }
+
             for surface in &mut self.surfaces {
                 if surface.output_name.as_deref() != Some(&update.name) {
                     continue;
