@@ -1,49 +1,32 @@
-# Rename crate/CLI from `wl-zenwindow` to `zenw`
+# Name the CLI binary `zenw`
 
 ## Summary
 
-`wl-zenwindow` is a mouthful as a command/crate name. Rename to `zenw` — short, memorable, and clearly traces back to the project.
+`wl-zenwindow` is a mouthful to type as a CLI command. The binary should be named `zenw` — short, memorable, and clearly traces back to the project name. The crate/library name stays `wl-zenwindow`.
 
 ## Changes Required
 
 ### Cargo.toml
 
-- Package `name` field: `wl-zenwindow` → `zenw`
+Add a `[[bin]]` section so the compiled binary is named `zenw`:
 
-### release-plz.toml
+```toml
+[[bin]]
+name = "zenw"
+path = "src/main.rs"
+```
 
-- Package `name`: `wl-zenwindow` → `zenw`
+### src/main.rs
 
-### src/window.rs (6 references)
-
-- Default namespace: `"wl-zenwindow"` → `"zenw"`
-- Doc comment for `namespace()` referencing the default
-- Thread names in `spawn()` and `spawn_nonblocking()`
-- Two test assertions checking the default namespace
-
-### src/lib.rs
-
-- Documentation table showing default namespace value
-
-### src/render.rs
-
-- Memfd identifier: `"wl-zenwindow-gamma"` → `"zenw-gamma"`
-
-### examples/gpui/main.rs
-
-- Example namespace: `"wl-zenwindow-demo"` → `"zenw-demo"`
+Create the CLI entry point. This doesn't exist yet — needs to be written as part of turning the library into a binary (or a library + binary crate).
 
 ### README.md
 
-- Title, dependency instructions, `use` imports (`wl_zenwindow::` → `zenw::`), docs.rs link, license text
-
-### Cargo.lock
-
-- Auto-updates from Cargo.toml change
+- Update usage/install instructions to reference the `zenw` command
+- Add CLI usage examples
 
 ## Considerations
 
-- **Downstream imports** change from `use wl_zenwindow::...` to `use zenw::...` — this is a breaking change
-- **crates.io** — if published, this would be a new crate name (could yank old, point to new)
-- **Repository URL** in Cargo.toml may need updating if the repo is renamed
-- No CI, shell completions, man pages, or service files need changes
+- The crate name `wl-zenwindow` and all library imports (`use wl_zenwindow::...`) stay the same — no breaking change for library consumers
+- `cargo install wl-zenwindow` would produce a `zenw` binary — worth calling out in docs
+- Shell completions, man pages, etc. should use `zenw` when added later
