@@ -220,12 +220,11 @@ impl DimController {
         let mut updates = Vec::new();
 
         // Animate the revealing output: alpha goes target→0, brightness goes target→1
-        let revealing = transition.revealing.clone();
-        if let Some(state) = self.outputs.get_mut(&revealing) {
+        if let Some(state) = self.outputs.get_mut(&transition.revealing) {
             state.alpha = self.target_opacity * (1.0 - eased);
             state.brightness = self.target_brightness + (1.0 - self.target_brightness) * eased;
             updates.push(OutputUpdate {
-                name: revealing,
+                name: transition.revealing.clone(),
                 opacity: Opacity::new(state.alpha),
                 brightness: Brightness::new(state.brightness),
             });
