@@ -26,7 +26,10 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_m
 use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1;
 
 use crate::error::SpawnError;
+use crate::state::GammaState;
+use crate::state::LoopPhase;
 use crate::state::OverlaySurface;
+use crate::state::SurfaceConfig;
 use crate::state::SurfaceRole;
 use crate::state::ZenState;
 use crate::transition::FadeIn;
@@ -111,7 +114,11 @@ pub(crate) fn run(
         shm,
         pool,
         surfaces: Vec::new(),
-        fading: config.fade_duration.is_some(),
+        phase: if config.fade_duration.is_some() {
+            LoopPhase::FadingIn
+        } else {
+            LoopPhase::Running
+        },
         target_opacity,
         color: config.color,
         skip_names: config.skip_names.clone(),
@@ -120,7 +127,6 @@ pub(crate) fn run(
         transition: None,
         toplevel_manager,
         toplevels: Vec::new(),
-        running: true,
     };
 
     // Discover outputs and toplevels
@@ -176,13 +182,14 @@ pub(crate) fn run(
         });
 
         let surface_idx = state.surfaces.len();
-        let gamma_control = if brightness.is_some() {
+        let gamma = if brightness.is_some() {
             state
                 .gamma_manager
                 .as_ref()
-                .map(|gm| gm.get_gamma_control(&output, &qh, surface_idx))
+                .map(|gm| GammaState::Pending(gm.get_gamma_control(&output, &qh, surface_idx)))
+                .unwrap_or(GammaState::Unavailable)
         } else {
-            None
+            GammaState::Unavailable
         };
 
         layer_surface.commit();
@@ -193,12 +200,9 @@ pub(crate) fn run(
             layer: layer_surface,
             viewport,
             alpha_surface,
-            gamma_control,
-            gamma_size: None,
+            gamma,
             buffer: None,
-            width: 0,
-            height: 0,
-            configured: false,
+            config: SurfaceConfig::Pending,
         });
 
         // Layer::Bottom backdrop — always opaque, prevents desktop flash
@@ -222,19 +226,20 @@ pub(crate) fn run(
             layer: backdrop_layer,
             viewport: None,
             alpha_surface: None,
-            gamma_control: None,
-            gamma_size: None,
+            gamma: GammaState::Unavailable,
             buffer: None,
-            width: 0,
-            height: 0,
-            configured: false,
+            config: SurfaceConfig::Pending,
         });
     }
 
     event_queue
         .roundtrip(&mut state)
         .map_err(|e| SpawnError::Setup(e.into()))?;
-    while state.surfaces.iter().any(|s| !s.configured) {
+    while state
+        .surfaces
+        .iter()
+        .any(|s| matches!(s.config, SurfaceConfig::Pending))
+    {
         event_queue
             .blocking_dispatch(&mut state)
             .map_err(|e| SpawnError::Setup(e.into()))?;
@@ -294,10 +299,11 @@ pub(crate) fn run(
     }
 
     // Steady state — toplevel Done handler starts cross-fade transitions
+    state.phase = LoopPhase::Running;
     let transition_tick = Duration::from_millis(8);
-    while state.running {
+    while state.phase == LoopPhase::Running {
         if shutdown.load(Ordering::Acquire) {
-            state.running = false;
+            state.phase = LoopPhase::ShuttingDown;
             break;
         }
 
@@ -320,7 +326,7 @@ pub(crate) fn run(
                 let fd = guard.connection_fd();
                 if poll_wayland_fd(fd, 100) {
                     if let Err(e) = guard.read() {
-                        state.running = false;
+                        state.phase = LoopPhase::ShuttingDown;
                         return Err(SpawnError::Setup(e.into()));
                     }
                 }

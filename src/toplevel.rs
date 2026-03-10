@@ -96,18 +96,27 @@ impl ZenState {
     }
 }
 
-fn find_toplevel<'a>(
+/// Find or create a tracked toplevel entry for the given handle.
+///
+/// If no entry exists, inserts one with default state and returns
+/// a mutable reference to it.
+fn find_or_insert_toplevel<'a>(
     toplevels: &'a mut Vec<TrackedToplevel>,
     handle: &ZwlrForeignToplevelHandleV1,
-) -> Option<&'a mut TrackedToplevel> {
-    if !toplevels.iter().any(|t| t.handle.id() == handle.id()) {
-        toplevels.push(TrackedToplevel {
-            handle: handle.clone(),
-            activated: false,
-            output: None,
-        });
+) -> &'a mut TrackedToplevel {
+    let idx = toplevels.iter().position(|t| t.handle.id() == handle.id());
+
+    match idx {
+        Some(i) => &mut toplevels[i],
+        None => {
+            toplevels.push(TrackedToplevel {
+                handle: handle.clone(),
+                activated: false,
+                output: None,
+            });
+            toplevels.last_mut().expect("just pushed")
+        }
     }
-    toplevels.iter_mut().find(|t| t.handle.id() == handle.id())
 }
 
 impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for ZenState {
@@ -173,9 +182,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ZenState {
                     }
                 }
 
-                if let Some(info) = find_toplevel(&mut state.toplevels, proxy) {
-                    info.output = Some(output);
-                }
+                find_or_insert_toplevel(&mut state.toplevels, proxy).output = Some(output);
             }
             zwlr_foreign_toplevel_handle_v1::Event::OutputLeave { output } => {
                 let leaving_name = state
@@ -211,9 +218,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ZenState {
                     }
                 }
 
-                if let Some(info) = find_toplevel(&mut state.toplevels, proxy) {
-                    info.output = None;
-                }
+                find_or_insert_toplevel(&mut state.toplevels, proxy).output = None;
             }
             zwlr_foreign_toplevel_handle_v1::Event::State { state: raw_state } => {
                 let activated = raw_state
@@ -221,9 +226,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ZenState {
                     .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
                     .any(|s| s == 2); // 2 = activated
 
-                if let Some(info) = find_toplevel(&mut state.toplevels, proxy) {
-                    info.activated = activated;
-                }
+                find_or_insert_toplevel(&mut state.toplevels, proxy).activated = activated;
             }
             zwlr_foreign_toplevel_handle_v1::Event::Done => {
                 // All properties for this toplevel are up to date —

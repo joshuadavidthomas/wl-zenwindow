@@ -31,24 +31,65 @@ pub(crate) enum SurfaceRole {
     Backdrop,
 }
 
+/// Whether a surface has been configured by the compositor with its dimensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceConfig {
+    Pending,
+    Ready { width: u32, height: u32 },
+}
+
+impl SurfaceConfig {
+    /// Returns dimensions if configured with non-zero size, `None` otherwise.
+    pub(crate) fn dimensions(&self) -> Option<(u32, u32)> {
+        match self {
+            SurfaceConfig::Ready { width, height } if *width > 0 && *height > 0 => {
+                Some((*width, *height))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Per-surface gamma control lifecycle.
+#[derive(Debug)]
+pub(crate) enum GammaState {
+    /// No gamma control for this surface (not requested or protocol unavailable).
+    Unavailable,
+    /// Control bound, waiting for the compositor's GammaSize event.
+    Pending(ZwlrGammaControlV1),
+    /// Ready to set gamma ramps.
+    Ready {
+        control: ZwlrGammaControlV1,
+        size: u32,
+    },
+}
+
 pub(crate) struct OverlaySurface {
     pub(crate) output_name: Option<String>,
     pub(crate) role: SurfaceRole,
     pub(crate) layer: LayerSurface,
     pub(crate) viewport: Option<WpViewport>,
     pub(crate) alpha_surface: Option<WpAlphaModifierSurfaceV1>,
-    pub(crate) gamma_control: Option<ZwlrGammaControlV1>,
-    pub(crate) gamma_size: Option<u32>,
+    pub(crate) gamma: GammaState,
     pub(crate) buffer: Option<Buffer>,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) configured: bool,
+    pub(crate) config: SurfaceConfig,
 }
 
 impl OverlaySurface {
     pub(crate) fn is_backdrop(&self) -> bool {
         self.role == SurfaceRole::Backdrop
     }
+}
+
+/// Which phase of the event loop lifecycle we're in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopPhase {
+    /// Initial fade-in animation is in progress.
+    FadingIn,
+    /// Steady state — overlays are up, handling focus transitions.
+    Running,
+    /// Shutting down — exit the event loop.
+    ShuttingDown,
 }
 
 pub(crate) struct ZenState {
@@ -62,7 +103,7 @@ pub(crate) struct ZenState {
     pub(crate) shm: Shm,
     pub(crate) pool: SlotPool,
     pub(crate) surfaces: Vec<OverlaySurface>,
-    pub(crate) fading: bool,
+    pub(crate) phase: LoopPhase,
     pub(crate) target_opacity: f64,
     pub(crate) color: [u8; 3],
     pub(crate) skip_names: HashSet<String>,
@@ -71,7 +112,6 @@ pub(crate) struct ZenState {
     pub(crate) transition: Option<Transition>,
     pub(crate) toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
     pub(crate) toplevels: Vec<TrackedToplevel>,
-    pub(crate) running: bool,
 }
 
 /// Whether a surface should be skipped (left transparent).
@@ -119,6 +159,47 @@ impl ZenState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_config_pending_has_no_dimensions() {
+        assert_eq!(SurfaceConfig::Pending.dimensions(), None);
+    }
+
+    #[test]
+    fn surface_config_ready_returns_dimensions() {
+        let config = SurfaceConfig::Ready {
+            width: 1920,
+            height: 1080,
+        };
+        assert_eq!(config.dimensions(), Some((1920, 1080)));
+    }
+
+    #[test]
+    fn surface_config_ready_zero_width_returns_none() {
+        let config = SurfaceConfig::Ready {
+            width: 0,
+            height: 1080,
+        };
+        assert_eq!(config.dimensions(), None);
+    }
+
+    #[test]
+    fn surface_config_ready_zero_height_returns_none() {
+        let config = SurfaceConfig::Ready {
+            width: 1920,
+            height: 0,
+        };
+        assert_eq!(config.dimensions(), None);
+    }
+
+    #[test]
+    fn surface_config_ready_both_zero_returns_none() {
+        let config = SurfaceConfig::Ready {
+            width: 0,
+            height: 0,
+        };
+        assert_eq!(config.dimensions(), None);
+    }
 
     fn skip_names(names: &[&str]) -> HashSet<String> {
         names.iter().map(|s| s.to_string()).collect()

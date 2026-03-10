@@ -12,6 +12,7 @@ use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_v1::{
     self,
 };
 
+use crate::state::GammaState;
 use crate::state::ZenState;
 
 pub(crate) fn create_gamma_ramp(size: u32, brightness: f64) -> std::io::Result<std::fs::File> {
@@ -44,10 +45,10 @@ impl ZenState {
             if self.is_skipped(idx) {
                 continue;
             }
-            if let (Some(ref ctrl), Some(size)) = (&surface.gamma_control, surface.gamma_size) {
+            if let GammaState::Ready { ref control, size } = surface.gamma {
                 match create_gamma_ramp(size, brightness) {
                     Ok(file) => {
-                        ctrl.set_gamma(file.as_fd());
+                        control.set_gamma(file.as_fd());
                     }
                     Err(e) => {
                         eprintln!("wl-zenwindow: gamma ramp error: {e}");
@@ -82,13 +83,16 @@ impl Dispatch<ZwlrGammaControlV1, usize> for ZenState {
         match event {
             zwlr_gamma_control_v1::Event::GammaSize { size } => {
                 if let Some(surface) = state.surfaces.get_mut(*surface_idx) {
-                    surface.gamma_size = Some(size);
+                    if let GammaState::Pending(control) =
+                        std::mem::replace(&mut surface.gamma, GammaState::Unavailable)
+                    {
+                        surface.gamma = GammaState::Ready { control, size };
+                    }
                 }
             }
             zwlr_gamma_control_v1::Event::Failed => {
                 if let Some(surface) = state.surfaces.get_mut(*surface_idx) {
-                    surface.gamma_control = None;
-                    surface.gamma_size = None;
+                    surface.gamma = GammaState::Unavailable;
                 }
             }
             _ => {}
