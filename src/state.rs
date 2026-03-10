@@ -19,13 +19,20 @@ use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_v1::Zwl
 use crate::toplevel::TrackedToplevel;
 use crate::transition::Transition;
 
+/// Convert an opacity value (0.0–1.0) to a premultiplied alpha byte (0–255).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn opacity_to_alpha(opacity: f64) -> u8 {
+    // After clamping to [0, 255], the cast is lossless.
+    (opacity * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
 /// Distinguishes the two kinds of surfaces created per output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SurfaceRole {
-    /// Layer::Overlay — participates in transitions, skip logic, and all
+    /// `Layer::Overlay` — participates in transitions, skip logic, and all
     /// optional protocol features (viewport, alpha surface, gamma control).
     Overlay,
-    /// Layer::Bottom backdrop — always opaque, never transitions.
+    /// `Layer::Bottom` backdrop — always opaque, never transitions.
     /// Prevents desktop flash when the compositor renders a frame
     /// before we receive foreign-toplevel events.
     Backdrop,
@@ -34,10 +41,13 @@ pub(crate) enum SurfaceRole {
 /// Whether a surface has been configured by the compositor with its dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SurfaceConfig {
+    /// Waiting for the compositor's initial configure event.
     Pending,
+    /// Configured with the given dimensions.
     Ready { width: u32, height: u32 },
 }
 
+/// Dimension accessors.
 impl SurfaceConfig {
     /// Returns dimensions if configured with non-zero size, `None` otherwise.
     pub(crate) fn dimensions(&self) -> Option<(u32, u32)> {
@@ -55,27 +65,44 @@ impl SurfaceConfig {
 pub(crate) enum GammaState {
     /// No gamma control for this surface (not requested or protocol unavailable).
     Unavailable,
-    /// Control bound, waiting for the compositor's GammaSize event.
+    /// Control bound, waiting for the compositor's `GammaSize` event.
     Pending(ZwlrGammaControlV1),
     /// Ready to set gamma ramps.
     Ready {
+        /// The gamma control protocol handle.
         control: ZwlrGammaControlV1,
+        /// Number of entries per channel in the gamma ramp.
         size: u32,
     },
 }
 
+/// A layer-shell surface placed on a single output.
+///
+/// Each output gets up to two of these: an [`SurfaceRole::Overlay`] that
+/// participates in transitions and skip logic, and a [`SurfaceRole::Backdrop`]
+/// that prevents desktop flash during the gap before focus events arrive.
 pub(crate) struct OverlaySurface {
+    /// Wayland name of the output this surface is on (e.g. `"DP-1"`).
     pub(crate) output_name: Option<String>,
+    /// Whether this is an overlay or a backdrop surface.
     pub(crate) role: SurfaceRole,
+    /// The layer-shell surface handle.
     pub(crate) layer: LayerSurface,
+    /// Viewporter handle for efficient 1-pixel rendering, if available.
     pub(crate) viewport: Option<WpViewport>,
+    /// Alpha modifier handle for hardware-composited alpha, if available.
     pub(crate) alpha_surface: Option<WpAlphaModifierSurfaceV1>,
+    /// Gamma control state for brightness dimming on this output.
     pub(crate) gamma: GammaState,
+    /// The most recently attached buffer, kept alive to prevent use-after-free.
     pub(crate) buffer: Option<Buffer>,
+    /// Whether and how the compositor has configured this surface.
     pub(crate) config: SurfaceConfig,
 }
 
+/// Role queries.
 impl OverlaySurface {
+    /// Returns `true` if this is a backdrop surface (always opaque, never transitions).
     pub(crate) fn is_backdrop(&self) -> bool {
         self.role == SurfaceRole::Backdrop
     }
@@ -92,25 +119,56 @@ pub(crate) enum LoopPhase {
     ShuttingDown,
 }
 
+/// Central runtime state for the Wayland event loop.
+///
+/// Holds all protocol objects, surface state, configuration, and focus
+/// tracking data. Created once in [`run()`](crate::run::run) and passed
+/// through the event loop as the `Dispatch` target.
 pub(crate) struct ZenState {
+    // Wayland protocol state (SCTK)
+    /// Registry for global object discovery.
     pub(crate) registry: RegistryState,
+    /// Tracks connected outputs and their properties.
     pub(crate) output_state: OutputState,
+    /// Creates `wl_surface` objects.
     pub(crate) compositor: CompositorState,
+    /// Creates layer-shell surfaces on outputs.
     pub(crate) layer_shell: LayerShell,
+    /// Viewporter for efficient 1-pixel rendering. `None` if unsupported.
     pub(crate) viewporter: Option<WpViewporter>,
+    /// Alpha modifier for hardware alpha compositing. `None` if unsupported.
     pub(crate) alpha_modifier: Option<WpAlphaModifierV1>,
+    /// Gamma control manager for brightness dimming. `None` if unsupported.
     pub(crate) gamma_manager: Option<ZwlrGammaControlManagerV1>,
+    /// Shared memory for buffer allocation.
     pub(crate) shm: Shm,
+    /// Buffer pool for allocating pixel data.
     pub(crate) pool: SlotPool,
+
+    // Surface state
+    /// All overlay and backdrop surfaces, two per output.
     pub(crate) surfaces: Vec<OverlaySurface>,
+    /// Current phase of the event loop lifecycle.
     pub(crate) phase: LoopPhase,
+    /// Target alpha for dimmed overlays (0.0–1.0).
     pub(crate) target_opacity: f64,
+    /// RGB overlay color.
     pub(crate) color: [u8; 3],
+
+    // Skip logic
+    /// Output names to always skip (never dim).
     pub(crate) skip_names: HashSet<String>,
+    /// Whether to skip the output with the focused window.
     pub(crate) skip_active: bool,
+    /// Wayland name of the currently focused output, if known.
     pub(crate) active_output: Option<String>,
+
+    // Transitions and focus tracking
+    /// In-progress cross-fade transition, if any.
     pub(crate) transition: Option<Transition>,
+    /// Foreign toplevel manager handle. `None` if unsupported or finished.
     pub(crate) toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
+    /// All tracked toplevel windows.
     pub(crate) toplevels: Vec<TrackedToplevel>,
 }
 
@@ -142,6 +200,7 @@ pub(crate) fn should_skip(
     false
 }
 
+/// Skip-logic queries.
 impl ZenState {
     /// Whether a surface should be skipped (transparent).
     pub(crate) fn is_skipped(&self, idx: usize) -> bool {
@@ -202,7 +261,7 @@ mod tests {
     }
 
     fn skip_names(names: &[&str]) -> HashSet<String> {
-        names.iter().map(|s| s.to_string()).collect()
+        names.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

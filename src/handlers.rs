@@ -25,10 +25,15 @@ use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpA
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
+use crate::state::opacity_to_alpha;
 use crate::state::LoopPhase;
 use crate::state::SurfaceConfig;
 use crate::state::ZenState;
 
+/// No-op compositor handler — we don't react to scale, transform, or frame events.
+///
+/// Overlay surfaces are simple solid-color fills, so scale factor changes
+/// and output transforms don't require re-rendering.
 impl CompositorHandler for ZenState {
     fn scale_factor_changed(
         &mut self,
@@ -69,6 +74,11 @@ impl CompositorHandler for ZenState {
     }
 }
 
+/// No-op output handler — outputs are enumerated at startup only.
+///
+/// Hot-plugged monitors after startup won't get overlay surfaces.
+/// This is a known limitation; the event loop would need to create
+/// new surfaces on `new_output` to support it.
 impl OutputHandler for ZenState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -79,6 +89,12 @@ impl OutputHandler for ZenState {
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 }
 
+/// Handles layer-shell surface lifecycle events.
+///
+/// `configure` records the surface dimensions and draws the initial frame.
+/// Backdrops are always drawn at full target opacity. Overlays start
+/// transparent if a fade-in is configured or the surface is skipped,
+/// otherwise they start at target opacity.
 impl LayerShellHandler for ZenState {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {}
 
@@ -103,23 +119,25 @@ impl LayerShellHandler for ZenState {
 
             let alpha = if self.surfaces[idx].is_backdrop() {
                 // Backdrops are always fully opaque
-                (self.target_opacity * 255.0) as u8
+                opacity_to_alpha(self.target_opacity)
             } else if self.phase == LoopPhase::FadingIn || self.is_skipped(idx) {
                 0
             } else {
-                (self.target_opacity * 255.0) as u8
+                opacity_to_alpha(self.target_opacity)
             };
             self.draw_fullsize(idx, alpha);
         }
     }
 }
 
+/// Provides access to the shared memory state for SCTK's buffer allocation.
 impl ShmHandler for ZenState {
     fn shm_state(&mut self) -> &mut Shm {
         &mut self.shm
     }
 }
 
+/// Provides access to the registry state for SCTK's global object discovery.
 impl ProvidesRegistryState for ZenState {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry
@@ -128,50 +146,52 @@ impl ProvidesRegistryState for ZenState {
     registry_handlers!(OutputState);
 }
 
-// No-op dispatch for protocols with no client-side events
-
+/// No-op dispatch — the viewporter global has no client-side events.
 impl Dispatch<WpViewporter, ()> for ZenState {
     fn event(
         _: &mut Self,
         _: &WpViewporter,
         _: <WpViewporter as wayland_client::Proxy>::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
     }
 }
 
+/// No-op dispatch — per-surface viewports have no client-side events.
 impl Dispatch<WpViewport, ()> for ZenState {
     fn event(
         _: &mut Self,
         _: &WpViewport,
         _: <WpViewport as wayland_client::Proxy>::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
     }
 }
 
+/// No-op dispatch — the alpha modifier global has no client-side events.
 impl Dispatch<WpAlphaModifierV1, ()> for ZenState {
     fn event(
         _: &mut Self,
         _: &WpAlphaModifierV1,
         _: <WpAlphaModifierV1 as wayland_client::Proxy>::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
     }
 }
 
+/// No-op dispatch — per-surface alpha modifiers have no client-side events.
 impl Dispatch<WpAlphaModifierSurfaceV1, ()> for ZenState {
     fn event(
         _: &mut Self,
         _: &WpAlphaModifierSurfaceV1,
         _: <WpAlphaModifierSurfaceV1 as wayland_client::Proxy>::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {

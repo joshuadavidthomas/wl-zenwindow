@@ -15,12 +15,21 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_m
     self,
 };
 
+use crate::state::opacity_to_alpha;
 use crate::state::ZenState;
 use crate::transition::Transition;
 
+/// State tracked for a single foreign toplevel (window).
+///
+/// The compositor sends events about every toplevel window. We track each
+/// one to know which window is activated and on which output, so we can
+/// keep the focused monitor undimmed.
 pub(crate) struct TrackedToplevel {
+    /// The Wayland protocol handle for this toplevel.
     pub(crate) handle: ZwlrForeignToplevelHandleV1,
+    /// Whether this toplevel is currently activated (has keyboard focus).
     pub(crate) activated: bool,
+    /// The output this toplevel is on, if known.
     pub(crate) output: Option<wl_output::WlOutput>,
 }
 
@@ -48,7 +57,10 @@ pub(crate) fn detect_output_change(
     })
 }
 
+/// Focus tracking and active-output detection.
 impl ZenState {
+    /// Return the Wayland name of the output that has the activated toplevel,
+    /// or `None` if no toplevel is activated or its output is unknown.
     pub(crate) fn active_output_name(&self) -> Option<String> {
         self.toplevels
             .iter()
@@ -65,13 +77,13 @@ impl ZenState {
         }
 
         let new_active = self.active_output_name();
-        let change =
-            match detect_output_change(self.active_output.as_deref(), new_active.as_deref()) {
-                Some(c) => c,
-                None => return,
-            };
+        let Some(change) =
+            detect_output_change(self.active_output.as_deref(), new_active.as_deref())
+        else {
+            return;
+        };
 
-        self.active_output = new_active.clone();
+        self.active_output.clone_from(&new_active);
 
         // Immediately dim the old monitor's overlay
         if let Some(ref name) = change.dim_output {
@@ -80,7 +92,7 @@ impl ZenState {
                     continue;
                 }
                 if self.surfaces[idx].output_name.as_deref() == Some(name.as_str()) {
-                    let alpha = (self.target_opacity * 255.0) as u8;
+                    let alpha = opacity_to_alpha(self.target_opacity);
                     self.draw_surface_alpha(idx, alpha);
                 }
             }
@@ -106,19 +118,22 @@ fn find_or_insert_toplevel<'a>(
 ) -> &'a mut TrackedToplevel {
     let idx = toplevels.iter().position(|t| t.handle.id() == handle.id());
 
-    match idx {
-        Some(i) => &mut toplevels[i],
-        None => {
-            toplevels.push(TrackedToplevel {
-                handle: handle.clone(),
-                activated: false,
-                output: None,
-            });
-            toplevels.last_mut().expect("just pushed")
-        }
+    if let Some(i) = idx {
+        &mut toplevels[i]
+    } else {
+        toplevels.push(TrackedToplevel {
+            handle: handle.clone(),
+            activated: false,
+            output: None,
+        });
+        toplevels.last_mut().expect("just pushed")
     }
 }
 
+/// Handles toplevel manager lifecycle events.
+///
+/// The only event is `Finished`, which means the compositor will send no
+/// more toplevel events — we clear the manager handle so we stop expecting them.
 impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for ZenState {
     fn event(
         state: &mut Self,
@@ -138,6 +153,16 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for ZenState {
     ]);
 }
 
+/// Handles per-toplevel events for focus tracking.
+///
+/// Tracks each window's activated state and output assignment. Key events:
+///
+/// - `OutputEnter` / `OutputLeave` — update which output a toplevel is on,
+///   and eagerly dim/reveal overlays before waiting for `Done`.
+/// - `State` — parse the activated flag from the raw state bitfield.
+/// - `Done` — all properties are up to date; trigger a focus-change
+///   cross-fade if the active output moved.
+/// - `Closed` — remove the toplevel from tracking.
 impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ZenState {
     fn event(
         state: &mut Self,
@@ -163,7 +188,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ZenState {
                 // Dim the old output's overlay immediately — earliest
                 // reaction to a window move, before OutputLeave or Done.
                 if let Some(ref name) = prev_output_name {
-                    let target_alpha = (state.target_opacity * 255.0) as u8;
+                    let target_alpha = opacity_to_alpha(state.target_opacity);
                     for idx in 0..state.surfaces.len() {
                         if state.surfaces[idx].is_backdrop() {
                             continue;
@@ -203,7 +228,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ZenState {
                     // - settled case (no transition, overlay at alpha=0)
                     // - mid-fade case (transition in progress)
                     if is_active || is_revealing {
-                        let target_alpha = (state.target_opacity * 255.0) as u8;
+                        let target_alpha = opacity_to_alpha(state.target_opacity);
                         for idx in 0..state.surfaces.len() {
                             if state.surfaces[idx].is_backdrop() {
                                 continue;

@@ -35,6 +35,10 @@ use crate::state::ZenState;
 use crate::transition::FadeIn;
 use crate::window::ZenConfig;
 
+/// Attempt to bind an optional Wayland global, returning `None` if absent.
+///
+/// Used for protocols that enhance functionality but aren't required
+/// (viewporter, alpha modifier, gamma control, foreign toplevel manager).
 fn try_bind<P: wayland_client::Proxy + 'static>(
     globals: &GlobalList,
     qh: &QueueHandle<ZenState>,
@@ -55,14 +59,24 @@ fn poll_wayland_fd(fd: std::os::unix::io::BorrowedFd<'_>, timeout_ms: i32) -> bo
         events: libc::POLLIN,
         revents: 0,
     };
-    let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+    let ret = unsafe { libc::poll(&raw mut pollfd, 1, timeout_ms) };
     ret > 0
 }
 
+/// Entry point for the background thread that manages overlay surfaces.
+///
+/// Connects to Wayland, binds required and optional protocols, creates
+/// overlay and backdrop surfaces on each output, runs the initial fade-in
+/// (if configured), then enters the steady-state event loop. Exits when
+/// `shutdown` is set to `true` or the Wayland connection is lost.
+///
+/// If `ready_tx` is `Some`, sends `()` once all surfaces are configured
+/// and ready (used by [`ZenWindowBuilder::spawn`] to unblock the caller).
+#[allow(clippy::too_many_lines)] // Wayland setup is inherently sequential
 pub(crate) fn run(
-    config: ZenConfig,
+    config: &ZenConfig,
     ready_tx: Option<mpsc::Sender<()>>,
-    shutdown: Arc<AtomicBool>,
+    shutdown: &Arc<AtomicBool>,
 ) -> Result<(), SpawnError> {
     if let Some(delay) = config.settle_delay {
         std::thread::sleep(delay);
@@ -186,8 +200,9 @@ pub(crate) fn run(
             state
                 .gamma_manager
                 .as_ref()
-                .map(|gm| GammaState::Pending(gm.get_gamma_control(&output, &qh, surface_idx)))
-                .unwrap_or(GammaState::Unavailable)
+                .map_or(GammaState::Unavailable, |gm| {
+                    GammaState::Pending(gm.get_gamma_control(&output, &qh, surface_idx))
+                })
         } else {
             GammaState::Unavailable
         };
