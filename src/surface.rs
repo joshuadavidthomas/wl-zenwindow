@@ -1,6 +1,7 @@
 use smithay_client_toolkit::shell::WaylandSurface;
 use wayland_client::protocol::wl_shm;
 
+use crate::state::should_skip;
 use crate::state::ZenState;
 
 pub(crate) fn premultiply_argb(r: u8, g: u8, b: u8, a: u8) -> u32 {
@@ -59,14 +60,14 @@ impl ZenState {
             canvas[..4].copy_from_slice(&pixel.to_ne_bytes());
 
             for surface in self.surfaces.iter_mut() {
-                if surface.is_backdrop() {
-                    continue;
-                }
-                if self
-                    .skip_names
-                    .contains(surface.output_name.as_deref().unwrap_or(""))
-                    || (self.skip_active
-                        && self.active_output.as_deref() == surface.output_name.as_deref())
+                if surface.is_backdrop()
+                    || should_skip(
+                        surface.role,
+                        surface.output_name.as_deref(),
+                        &self.skip_names,
+                        self.skip_active,
+                        self.active_output.as_deref(),
+                    )
                 {
                     continue;
                 }
