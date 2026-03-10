@@ -32,6 +32,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::render::Brightness;
+use crate::render::Opacity;
+
 /// Per-output dimming state.
 ///
 /// This is the source of truth for "what should this output look like."
@@ -60,8 +63,8 @@ impl std::ops::Deref for DimUpdates {
 #[derive(Debug, Clone)]
 pub struct OutputUpdate {
     pub name: String,
-    pub alpha: f64,
-    pub brightness: f64,
+    pub opacity: Opacity,
+    pub brightness: Brightness,
 }
 
 /// Owns all dimming logic. Computes alpha AND gamma together.
@@ -172,8 +175,8 @@ impl DimController {
                 state.brightness = self.target_brightness;
                 updates.push(OutputUpdate {
                     name: name.clone(),
-                    alpha: state.alpha,
-                    brightness: state.brightness,
+                    opacity: Opacity::new(state.alpha),
+                    brightness: Brightness::new(state.brightness),
                 });
             }
         }
@@ -224,8 +227,8 @@ impl DimController {
             state.brightness = self.target_brightness + (1.0 - self.target_brightness) * eased;
             updates.push(OutputUpdate {
                 name: revealing,
-                alpha: state.alpha,
-                brightness: state.brightness,
+                opacity: Opacity::new(state.alpha),
+                brightness: Brightness::new(state.brightness),
             });
         }
 
@@ -262,8 +265,8 @@ impl DimController {
             }
             updates.push(OutputUpdate {
                 name: name.clone(),
-                alpha: state.alpha,
-                brightness: state.brightness,
+                opacity: Opacity::new(state.alpha),
+                brightness: Brightness::new(state.brightness),
             });
         }
 
@@ -284,8 +287,8 @@ impl DimController {
             }
             updates.push(OutputUpdate {
                 name: name.clone(),
-                alpha: state.alpha,
-                brightness: state.brightness,
+                opacity: Opacity::new(state.alpha),
+                brightness: Brightness::new(state.brightness),
             });
         }
 
@@ -296,8 +299,8 @@ impl DimController {
     pub fn current_update(&self, name: &str) -> Option<OutputUpdate> {
         self.outputs.get(name).map(|state| OutputUpdate {
             name: name.to_string(),
-            alpha: state.alpha,
-            brightness: state.brightness,
+            opacity: Opacity::new(state.alpha),
+            brightness: Brightness::new(state.brightness),
         })
     }
 
@@ -317,8 +320,8 @@ impl DimController {
             state.brightness = self.target_brightness;
             updates.push(OutputUpdate {
                 name: name.clone(),
-                alpha: state.alpha,
-                brightness: state.brightness,
+                opacity: Opacity::new(state.alpha),
+                brightness: Brightness::new(state.brightness),
             });
         }
 
@@ -370,8 +373,8 @@ mod tests {
         // DP-1 should be immediately dimmed
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].name, "DP-1");
-        assert_eq!(updates[0].alpha, 0.8);
-        assert_eq!(updates[0].brightness, 0.5);
+        assert_eq!(updates[0].opacity.as_f64(), 0.8);
+        assert_eq!(updates[0].brightness.as_f64(), 0.5);
 
         // DP-2 should now be skipped, transition started
         assert!(ctrl.is_skipped("DP-2"));
@@ -401,10 +404,10 @@ mod tests {
         let updates = ctrl.tick();
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].name, "DP-2");
-        // Alpha should be decreasing toward 0
-        assert!(updates[0].alpha < 1.0);
+        // Opacity should be decreasing toward 0
+        assert!(updates[0].opacity.as_f64() < 1.0);
         // Brightness should be increasing toward 1
-        assert!(updates[0].brightness > 0.5);
+        assert!(updates[0].brightness.as_f64() > 0.5);
     }
 
     #[test]
@@ -419,12 +422,12 @@ mod tests {
         let dp2 = updates.iter().find(|u| u.name == "DP-2").unwrap();
 
         // DP-1 is skipped (active): stays transparent
-        assert_eq!(dp1.alpha, 0.0);
-        assert_eq!(dp1.brightness, 1.0);
+        assert_eq!(dp1.opacity.as_f64(), 0.0);
+        assert_eq!(dp1.brightness.as_f64(), 1.0);
 
         // DP-2 is not skipped: fading toward target
-        assert!(dp2.alpha > 0.0);
-        assert!(dp2.brightness < 1.0);
+        assert!(dp2.opacity.as_f64() > 0.0);
+        assert!(dp2.brightness.as_f64() < 1.0);
     }
 
     #[test]
@@ -458,9 +461,9 @@ mod tests {
         let dp1 = updates.iter().find(|u| u.name == "DP-1").unwrap();
         let dp2 = updates.iter().find(|u| u.name == "DP-2").unwrap();
 
-        assert_eq!(dp1.alpha, 0.0);
-        assert_eq!(dp1.brightness, 1.0);
-        assert_eq!(dp2.alpha, 0.8);
-        assert_eq!(dp2.brightness, 0.4);
+        assert_eq!(dp1.opacity.as_f64(), 0.0);
+        assert_eq!(dp1.brightness.as_f64(), 1.0);
+        assert_eq!(dp2.opacity.as_f64(), 0.8);
+        assert_eq!(dp2.brightness.as_f64(), 0.4);
     }
 }

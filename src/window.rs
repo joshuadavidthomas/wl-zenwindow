@@ -7,6 +7,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::error::SpawnError;
+use crate::render::Brightness;
+use crate::render::Color;
+use crate::render::Opacity;
 use crate::run::run;
 
 /// Resolved configuration passed to the background thread.
@@ -26,12 +29,12 @@ pub(crate) struct Config {
     pub(crate) settle_delay: Option<Duration>,
     /// Duration of the initial fade-in animation.
     pub(crate) fade_duration: Option<Duration>,
-    /// Target alpha for dimmed overlays (0.0–1.0, already clamped).
-    pub(crate) target_opacity: f64,
-    /// RGB overlay color.
-    pub(crate) color: [u8; 3],
+    /// Target opacity for dimmed overlays.
+    pub(crate) target_opacity: Opacity,
+    /// Overlay color.
+    pub(crate) color: Color,
     /// Target brightness for gamma dimming. `None` means gamma is untouched.
-    pub(crate) target_brightness: Option<f64>,
+    pub(crate) target_brightness: Option<Brightness>,
 }
 
 /// Builder for configuring which outputs to dim.
@@ -41,9 +44,9 @@ pub struct ZenWindowBuilder {
     namespace: String,
     settle_delay: Option<Duration>,
     fade_duration: Option<Duration>,
-    opacity: f64,
-    color: [u8; 3],
-    brightness: Option<f64>,
+    opacity: Opacity,
+    color: Color,
+    brightness: Option<Brightness>,
 }
 
 /// Builder configuration and spawn methods.
@@ -55,8 +58,8 @@ impl ZenWindowBuilder {
             namespace: "wl-zenwindow".into(),
             settle_delay: None,
             fade_duration: None,
-            opacity: 1.0,
-            color: [0, 0, 0],
+            opacity: Opacity::OPAQUE,
+            color: Color::BLACK,
             brightness: None,
         }
     }
@@ -102,30 +105,64 @@ impl ZenWindowBuilder {
         self
     }
 
-    /// Set the overlay color as RGB (default: black `(0, 0, 0)`).
+    /// Set the overlay color (default: black).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wl_zenwindow::{ZenWindow, Color};
+    ///
+    /// let _ = ZenWindow::builder().color(Color::new(255, 0, 0));
+    /// let _ = ZenWindow::builder().color([0x1a, 0x1a, 0x1a]);
+    /// let _ = ZenWindow::builder().color(Color::BLACK);
+    /// ```
     #[must_use]
-    pub fn color(mut self, r: u8, g: u8, b: u8) -> Self {
-        self.color = [r, g, b];
+    pub fn color(mut self, color: impl Into<Color>) -> Self {
+        self.color = color.into();
         self
     }
 
-    /// Set the final overlay opacity (0.0 = transparent, 1.0 = fully opaque).
-    /// Default: 1.0.
+    /// Set the final overlay opacity (default: fully opaque).
+    ///
+    /// Accepts [`Opacity`] or a raw `f64` (clamped to 0.0–1.0).
+    /// `0.0` = transparent, `1.0` = fully opaque.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wl_zenwindow::{ZenWindow, Opacity};
+    ///
+    /// // Using a raw f64
+    /// let _ = ZenWindow::builder().opacity(0.85);
+    ///
+    /// // Using Opacity directly
+    /// let _ = ZenWindow::builder().opacity(Opacity::new(0.85));
+    /// ```
     #[must_use]
-    pub fn opacity(mut self, opacity: f64) -> Self {
-        self.opacity = opacity.clamp(0.0, 1.0);
+    pub fn opacity(mut self, opacity: impl Into<Opacity>) -> Self {
+        self.opacity = opacity.into();
         self
     }
 
     /// Dim monitor brightness via gamma control.
-    /// 0.0 = completely dark, 1.0 = normal brightness.
+    ///
+    /// `0.0` = completely dark, `1.0` = normal brightness.
     /// Default: unset (gamma untouched).
     ///
     /// Uses the `zwlr_gamma_control_v1` protocol. Falls back gracefully
     /// if another client (e.g., `wlsunset`) already controls gamma.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wl_zenwindow::{ZenWindow, Brightness};
+    ///
+    /// let _ = ZenWindow::builder().brightness(0.7);
+    /// let _ = ZenWindow::builder().brightness(Brightness::new(0.7));
+    /// ```
     #[must_use]
-    pub fn brightness(mut self, brightness: f64) -> Self {
-        self.brightness = Some(brightness.clamp(0.0, 1.0));
+    pub fn brightness(mut self, brightness: impl Into<Brightness>) -> Self {
+        self.brightness = Some(brightness.into());
         self
     }
 
@@ -264,39 +301,45 @@ mod tests {
         assert_eq!(b.namespace, "wl-zenwindow");
         assert!(b.settle_delay.is_none());
         assert!(b.fade_duration.is_none());
-        assert_eq!(b.opacity, 1.0);
-        assert_eq!(b.color, [0, 0, 0]);
+        assert_eq!(b.opacity, Opacity::OPAQUE);
+        assert_eq!(b.color, Color::BLACK);
         assert!(b.brightness.is_none());
     }
 
     #[test]
     fn opacity_clamped_above() {
         let b = ZenWindow::builder().opacity(1.5);
-        assert_eq!(b.opacity, 1.0);
+        assert_eq!(b.opacity.as_f64(), 1.0);
     }
 
     #[test]
     fn opacity_clamped_below() {
         let b = ZenWindow::builder().opacity(-0.5);
-        assert_eq!(b.opacity, 0.0);
+        assert_eq!(b.opacity.as_f64(), 0.0);
     }
 
     #[test]
     fn opacity_within_range() {
         let b = ZenWindow::builder().opacity(0.7);
-        assert!((b.opacity - 0.7).abs() < f64::EPSILON);
+        assert!((b.opacity.as_f64() - 0.7).abs() < f64::EPSILON);
     }
 
     #[test]
     fn brightness_clamped_above() {
         let b = ZenWindow::builder().brightness(2.0);
-        assert_eq!(b.brightness, Some(1.0));
+        assert_eq!(
+            b.brightness.map(super::super::render::Brightness::as_f64),
+            Some(1.0)
+        );
     }
 
     #[test]
     fn brightness_clamped_below() {
         let b = ZenWindow::builder().brightness(-1.0);
-        assert_eq!(b.brightness, Some(0.0));
+        assert_eq!(
+            b.brightness.map(super::super::render::Brightness::as_f64),
+            Some(0.0)
+        );
     }
 
     #[test]
@@ -314,7 +357,7 @@ mod tests {
         let b = ZenWindow::builder()
             .skip_active()
             .namespace("custom")
-            .color(255, 0, 128)
+            .color([255, 0, 128])
             .opacity(0.5)
             .brightness(0.3)
             .settle_delay(Duration::from_millis(200))
@@ -322,9 +365,12 @@ mod tests {
 
         assert!(b.skip_active);
         assert_eq!(b.namespace, "custom");
-        assert_eq!(b.color, [255, 0, 128]);
-        assert!((b.opacity - 0.5).abs() < f64::EPSILON);
-        assert_eq!(b.brightness, Some(0.3));
+        assert_eq!(b.color, Color::new(255, 0, 128));
+        assert!((b.opacity.as_f64() - 0.5).abs() < f64::EPSILON);
+        assert_eq!(
+            b.brightness.map(super::super::render::Brightness::as_f64),
+            Some(0.3)
+        );
         assert_eq!(b.settle_delay, Some(Duration::from_millis(200)));
         assert_eq!(b.fade_duration, Some(Duration::from_millis(500)));
     }
@@ -338,7 +384,7 @@ mod tests {
             .settle_delay(Duration::from_millis(100))
             .fade_in(Duration::from_secs(1))
             .opacity(0.8)
-            .color(10, 20, 30)
+            .color([10, 20, 30])
             .brightness(0.6);
 
         let config = Config::from(&b);
@@ -348,9 +394,14 @@ mod tests {
         assert_eq!(config.namespace, "test-ns");
         assert_eq!(config.settle_delay, Some(Duration::from_millis(100)));
         assert_eq!(config.fade_duration, Some(Duration::from_secs(1)));
-        assert!((config.target_opacity - 0.8).abs() < f64::EPSILON);
-        assert_eq!(config.color, [10, 20, 30]);
-        assert_eq!(config.target_brightness, Some(0.6));
+        assert!((config.target_opacity.as_f64() - 0.8).abs() < f64::EPSILON);
+        assert_eq!(config.color, Color::new(10, 20, 30));
+        assert_eq!(
+            config
+                .target_brightness
+                .map(super::super::render::Brightness::as_f64),
+            Some(0.6)
+        );
     }
 
     #[test]
@@ -363,8 +414,8 @@ mod tests {
         assert_eq!(config.namespace, "wl-zenwindow");
         assert!(config.settle_delay.is_none());
         assert!(config.fade_duration.is_none());
-        assert_eq!(config.target_opacity, 1.0);
-        assert_eq!(config.color, [0, 0, 0]);
+        assert_eq!(config.target_opacity.as_f64(), 1.0);
+        assert_eq!(config.color, Color::BLACK);
         assert!(config.target_brightness.is_none());
     }
 }

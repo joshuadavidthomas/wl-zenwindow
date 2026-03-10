@@ -108,8 +108,10 @@ pub(crate) fn run(
 
     // Create DimController
     let dim = DimController::new(
-        config.target_opacity,
-        config.target_brightness,
+        config.target_opacity.as_f64(),
+        config
+            .target_brightness
+            .map(super::render::Brightness::as_f64),
         config.skip_active,
     );
 
