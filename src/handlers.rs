@@ -25,6 +25,7 @@ use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpA
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
+use crate::state::LoopPhase;
 use crate::state::SurfaceConfig;
 use crate::state::ZenState;
 
@@ -103,7 +104,7 @@ impl LayerShellHandler for ZenState {
             let alpha = if self.surfaces[idx].is_backdrop() {
                 // Backdrops are always fully opaque
                 (self.target_opacity * 255.0) as u8
-            } else if self.fading || self.is_skipped(idx) {
+            } else if self.phase == LoopPhase::FadingIn || self.is_skipped(idx) {
                 0
             } else {
                 (self.target_opacity * 255.0) as u8

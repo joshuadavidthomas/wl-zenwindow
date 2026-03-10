@@ -81,6 +81,17 @@ impl OverlaySurface {
     }
 }
 
+/// Which phase of the event loop lifecycle we're in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopPhase {
+    /// Initial fade-in animation is in progress.
+    FadingIn,
+    /// Steady state — overlays are up, handling focus transitions.
+    Running,
+    /// Shutting down — exit the event loop.
+    ShuttingDown,
+}
+
 pub(crate) struct ZenState {
     pub(crate) registry: RegistryState,
     pub(crate) output_state: OutputState,
@@ -92,7 +103,7 @@ pub(crate) struct ZenState {
     pub(crate) shm: Shm,
     pub(crate) pool: SlotPool,
     pub(crate) surfaces: Vec<OverlaySurface>,
-    pub(crate) fading: bool,
+    pub(crate) phase: LoopPhase,
     pub(crate) target_opacity: f64,
     pub(crate) color: [u8; 3],
     pub(crate) skip_names: HashSet<String>,
@@ -101,7 +112,6 @@ pub(crate) struct ZenState {
     pub(crate) transition: Option<Transition>,
     pub(crate) toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
     pub(crate) toplevels: Vec<TrackedToplevel>,
-    pub(crate) running: bool,
 }
 
 /// Whether a surface should be skipped (left transparent).
