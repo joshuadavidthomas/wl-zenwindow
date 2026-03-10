@@ -26,6 +26,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_m
 use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1;
 
 use crate::error::SpawnError;
+use crate::state::GammaState;
 use crate::state::OverlaySurface;
 use crate::state::SurfaceConfig;
 use crate::state::SurfaceRole;
@@ -177,13 +178,14 @@ pub(crate) fn run(
         });
 
         let surface_idx = state.surfaces.len();
-        let gamma_control = if brightness.is_some() {
+        let gamma = if brightness.is_some() {
             state
                 .gamma_manager
                 .as_ref()
-                .map(|gm| gm.get_gamma_control(&output, &qh, surface_idx))
+                .map(|gm| GammaState::Pending(gm.get_gamma_control(&output, &qh, surface_idx)))
+                .unwrap_or(GammaState::Unavailable)
         } else {
-            None
+            GammaState::Unavailable
         };
 
         layer_surface.commit();
@@ -194,8 +196,7 @@ pub(crate) fn run(
             layer: layer_surface,
             viewport,
             alpha_surface,
-            gamma_control,
-            gamma_size: None,
+            gamma,
             buffer: None,
             config: SurfaceConfig::Pending,
         });
@@ -221,8 +222,7 @@ pub(crate) fn run(
             layer: backdrop_layer,
             viewport: None,
             alpha_surface: None,
-            gamma_control: None,
-            gamma_size: None,
+            gamma: GammaState::Unavailable,
             buffer: None,
             config: SurfaceConfig::Pending,
         });

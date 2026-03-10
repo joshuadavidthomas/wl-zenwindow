@@ -50,14 +50,27 @@ impl SurfaceConfig {
     }
 }
 
+/// Per-surface gamma control lifecycle.
+#[derive(Debug)]
+pub(crate) enum GammaState {
+    /// No gamma control for this surface (not requested or protocol unavailable).
+    Unavailable,
+    /// Control bound, waiting for the compositor's GammaSize event.
+    Pending(ZwlrGammaControlV1),
+    /// Ready to set gamma ramps.
+    Ready {
+        control: ZwlrGammaControlV1,
+        size: u32,
+    },
+}
+
 pub(crate) struct OverlaySurface {
     pub(crate) output_name: Option<String>,
     pub(crate) role: SurfaceRole,
     pub(crate) layer: LayerSurface,
     pub(crate) viewport: Option<WpViewport>,
     pub(crate) alpha_surface: Option<WpAlphaModifierSurfaceV1>,
-    pub(crate) gamma_control: Option<ZwlrGammaControlV1>,
-    pub(crate) gamma_size: Option<u32>,
+    pub(crate) gamma: GammaState,
     pub(crate) buffer: Option<Buffer>,
     pub(crate) config: SurfaceConfig,
 }
