@@ -60,6 +60,7 @@ use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::State as ToplevelState;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::{
     self,
@@ -77,9 +78,6 @@ use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_v1::{
 use crate::app::App;
 use crate::app::AppPhase;
 use crate::render::LayerShellHandshake;
-
-/// `zwlr_foreign_toplevel_handle_v1` state value for an activated toplevel.
-const TOPLEVEL_STATE_ACTIVATED: u32 = 2;
 
 /// Wayland protocol state — all the compositor bindings.
 pub struct Wayland {
@@ -113,14 +111,16 @@ pub struct TrackedToplevel {
     handle: ZwlrForeignToplevelHandleV1,
     output: Option<WlOutput>,
     focus: ToplevelFocus,
+    states: Vec<ToplevelState>,
 }
 
 impl TrackedToplevel {
-    fn new(handle: ZwlrForeignToplevelHandleV1) -> Self {
+    pub(crate) fn new(handle: ZwlrForeignToplevelHandleV1) -> Self {
         Self {
             handle,
             output: None,
             focus: ToplevelFocus::Inactive,
+            states: Vec::new(),
         }
     }
 
@@ -140,6 +140,11 @@ impl TrackedToplevel {
         self.focus == ToplevelFocus::Active
     }
 
+    /// Whether this toplevel has the given state.
+    pub fn has_state(&self, state: ToplevelState) -> bool {
+        self.states.contains(&state)
+    }
+
     fn enter_output(&mut self, output: WlOutput) {
         self.output = Some(output);
     }
@@ -152,27 +157,16 @@ impl TrackedToplevel {
         self.focus = focus;
     }
 
+    fn update_states(&mut self, states: Vec<ToplevelState>) {
+        self.states = states;
+    }
+
     fn is_moving_to_different_output(&self, new_output: &WlOutput) -> bool {
         self.is_focused()
             && self
                 .output
                 .as_ref()
                 .is_some_and(|o| o.id() != new_output.id())
-    }
-}
-
-/// Find or create a tracked toplevel entry for the given handle.
-fn find_or_insert_toplevel<'a>(
-    toplevels: &'a mut Vec<TrackedToplevel>,
-    handle: &ZwlrForeignToplevelHandleV1,
-) -> &'a mut TrackedToplevel {
-    let idx = toplevels.iter().position(|t| t.handle_id() == handle.id());
-
-    if let Some(i) = idx {
-        &mut toplevels[i]
-    } else {
-        toplevels.push(TrackedToplevel::new(handle.clone()));
-        toplevels.last_mut().expect("just pushed")
     }
 }
 
@@ -360,45 +354,51 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for App {
     ) {
         match event {
             zwlr_foreign_toplevel_handle_v1::Event::OutputEnter { output } => {
-                let toplevel = state.toplevels.iter().find(|t| t.handle_id() == proxy.id());
-
-                if toplevel.is_some_and(|t| t.is_moving_to_different_output(&output)) {
+                if state
+                    .find_toplevel(proxy)
+                    .is_some_and(|t| t.is_moving_to_different_output(&output))
+                {
                     // Activated window is moving! Snap ALL overlays opaque immediately.
                     state.dim_all_outputs();
                     state.dim.cancel_transition();
                 }
 
-                find_or_insert_toplevel(&mut state.toplevels, proxy).enter_output(output);
+                state.find_or_insert_toplevel(proxy).enter_output(output);
             }
             zwlr_foreign_toplevel_handle_v1::Event::OutputLeave { output: _ } => {
-                let toplevel = state.toplevels.iter().find(|t| t.handle_id() == proxy.id());
-
-                if toplevel.is_some_and(TrackedToplevel::is_focused) {
+                if state
+                    .find_toplevel(proxy)
+                    .is_some_and(TrackedToplevel::is_focused)
+                {
                     // Activated window is leaving an output! Snap ALL overlays opaque.
                     state.dim_all_outputs();
                     state.dim.cancel_transition();
                 }
 
-                find_or_insert_toplevel(&mut state.toplevels, proxy).leave_output();
+                state.find_or_insert_toplevel(proxy).leave_output();
             }
             zwlr_foreign_toplevel_handle_v1::Event::State { state: raw_state } => {
-                let focus = if raw_state
+                let states: Vec<ToplevelState> = raw_state
                     .chunks_exact(4)
                     .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-                    .any(|s| s == TOPLEVEL_STATE_ACTIVATED)
-                {
+                    .filter_map(|s| ToplevelState::try_from(s).ok())
+                    .collect();
+
+                let toplevel = state.find_or_insert_toplevel(proxy);
+                toplevel.update_states(states);
+
+                let focus = if toplevel.has_state(ToplevelState::Activated) {
                     ToplevelFocus::Active
                 } else {
                     ToplevelFocus::Inactive
                 };
-
-                find_or_insert_toplevel(&mut state.toplevels, proxy).update_focus(focus);
+                toplevel.update_focus(focus);
             }
             zwlr_foreign_toplevel_handle_v1::Event::Done => {
                 state.refresh_active_output();
             }
             zwlr_foreign_toplevel_handle_v1::Event::Closed => {
-                state.toplevels.retain(|t| t.handle_id() != proxy.id());
+                state.remove_toplevel(proxy);
             }
             _ => {}
         }

@@ -31,7 +31,9 @@ use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use smithay_client_toolkit::shell::WaylandSurface;
 use wayland_client::protocol::wl_output::WlOutput;
+use wayland_client::Proxy as _;
 use wayland_client::QueueHandle;
+use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 
 use crate::dim::DimController;
 use crate::dim::DimUpdates;
@@ -65,7 +67,7 @@ pub struct App {
     /// Managed surfaces.
     pub surfaces: Vec<Surface>,
     /// Tracked toplevels for focus detection.
-    pub toplevels: Vec<TrackedToplevel>,
+    pub(crate) toplevels: Vec<TrackedToplevel>,
     /// Current loop phase.
     pub phase: AppPhase,
     /// Dimming state machine.
@@ -171,6 +173,34 @@ impl App {
         self.surfaces
             .iter()
             .all(|s| !matches!(s.configure, LayerShellHandshake::Pending))
+    }
+
+    /// Look up a tracked toplevel by its protocol handle.
+    pub fn find_toplevel(&self, handle: &ZwlrForeignToplevelHandleV1) -> Option<&TrackedToplevel> {
+        self.toplevels.iter().find(|t| t.handle_id() == handle.id())
+    }
+
+    /// Find or create a tracked toplevel entry for the given handle.
+    pub fn find_or_insert_toplevel(
+        &mut self,
+        handle: &ZwlrForeignToplevelHandleV1,
+    ) -> &mut TrackedToplevel {
+        let idx = self
+            .toplevels
+            .iter()
+            .position(|t| t.handle_id() == handle.id());
+
+        if let Some(i) = idx {
+            &mut self.toplevels[i]
+        } else {
+            self.toplevels.push(TrackedToplevel::new(handle.clone()));
+            self.toplevels.last_mut().expect("just pushed")
+        }
+    }
+
+    /// Remove a tracked toplevel when its window closes.
+    pub fn remove_toplevel(&mut self, handle: &ZwlrForeignToplevelHandleV1) {
+        self.toplevels.retain(|t| t.handle_id() != handle.id());
     }
 
     /// Get the currently active output name from toplevel tracking.
