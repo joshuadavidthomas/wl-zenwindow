@@ -413,9 +413,7 @@ impl Surface {
             .expect("failed to create buffer");
 
         let pixel = premultiply_argb(color, alpha);
-        let pixels: &mut [u32] = unsafe {
-            std::slice::from_raw_parts_mut(canvas.as_mut_ptr().cast::<u32>(), canvas.len() / 4)
-        };
+        let pixels: &mut [u32] = bytemuck::cast_slice_mut(canvas);
         pixels.fill(pixel);
 
         self.layer
