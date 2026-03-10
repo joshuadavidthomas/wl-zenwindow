@@ -9,8 +9,32 @@ use std::time::Duration;
 use crate::error::SpawnError;
 use crate::run::run;
 
+/// Resolved configuration passed to the background thread.
+///
+/// Created from [`ZenWindowBuilder`] via the [`From`] impl. This is a plain
+/// data struct with no builder methods — all validation and defaults are
+/// handled by the builder.
+#[derive(Debug, Clone)]
+pub(crate) struct Config {
+    /// Output names to never create surfaces on.
+    pub(crate) skip_names: HashSet<String>,
+    /// Whether to leave the focused output undimmed.
+    pub(crate) skip_active: bool,
+    /// Layer-shell namespace for overlay surfaces.
+    pub(crate) namespace: String,
+    /// Delay before connecting to Wayland and creating surfaces.
+    pub(crate) settle_delay: Option<Duration>,
+    /// Duration of the initial fade-in animation.
+    pub(crate) fade_duration: Option<Duration>,
+    /// Target alpha for dimmed overlays (0.0–1.0, already clamped).
+    pub(crate) target_opacity: f64,
+    /// RGB overlay color.
+    pub(crate) color: [u8; 3],
+    /// Target brightness for gamma dimming. `None` means gamma is untouched.
+    pub(crate) target_brightness: Option<f64>,
+}
+
 /// Builder for configuring which outputs to dim.
-#[must_use]
 pub struct ZenWindowBuilder {
     skip_names: HashSet<String>,
     skip_active: bool,
@@ -24,7 +48,6 @@ pub struct ZenWindowBuilder {
 
 /// Builder configuration and spawn methods.
 impl ZenWindowBuilder {
-    /// Create a builder with default settings.
     fn new() -> Self {
         Self {
             skip_names: HashSet::new(),
@@ -39,6 +62,7 @@ impl ZenWindowBuilder {
     }
 
     /// Skip an output by its Wayland name (e.g., "DP-6", "eDP-1").
+    #[must_use]
     pub fn skip_output(mut self, name: impl Into<String>) -> Self {
         self.skip_names.insert(name.into());
         self
@@ -49,12 +73,14 @@ impl ZenWindowBuilder {
     /// Uses `zwlr_foreign_toplevel_manager_v1` to detect which output
     /// has the currently activated toplevel. Falls back to dimming all
     /// outputs if the protocol is unavailable or no toplevel is focused.
+    #[must_use]
     pub fn skip_active(mut self) -> Self {
         self.skip_active = true;
         self
     }
 
     /// Set the layer-shell namespace (default: "wl-zenwindow").
+    #[must_use]
     pub fn namespace(mut self, ns: impl Into<String>) -> Self {
         self.namespace = ns.into();
         self
@@ -63,18 +89,21 @@ impl ZenWindowBuilder {
     /// Wait before creating surfaces. Useful when launching alongside
     /// a UI window — gives the window time to render and gain focus
     /// before detecting the active output.
+    #[must_use]
     pub fn settle_delay(mut self, delay: Duration) -> Self {
         self.settle_delay = Some(delay);
         self
     }
 
     /// Fade in the overlays over the given duration.
+    #[must_use]
     pub fn fade_in(mut self, duration: Duration) -> Self {
         self.fade_duration = Some(duration);
         self
     }
 
     /// Set the overlay color as RGB (default: black `(0, 0, 0)`).
+    #[must_use]
     pub fn color(mut self, r: u8, g: u8, b: u8) -> Self {
         self.color = [r, g, b];
         self
@@ -82,6 +111,7 @@ impl ZenWindowBuilder {
 
     /// Set the final overlay opacity (0.0 = transparent, 1.0 = fully opaque).
     /// Default: 1.0.
+    #[must_use]
     pub fn opacity(mut self, opacity: f64) -> Self {
         self.opacity = opacity.clamp(0.0, 1.0);
         self
@@ -93,6 +123,7 @@ impl ZenWindowBuilder {
     ///
     /// Uses the `zwlr_gamma_control_v1` protocol. Falls back gracefully
     /// if another client (e.g., `wlsunset`) already controls gamma.
+    #[must_use]
     pub fn brightness(mut self, brightness: f64) -> Self {
         self.brightness = Some(brightness.clamp(0.0, 1.0));
         self
@@ -101,10 +132,8 @@ impl ZenWindowBuilder {
     /// Spawn on a background thread.
     ///
     /// Blocks briefly until Wayland setup completes (typically a few
-    /// milliseconds).
-    ///
-    /// Returns a [`ZenWindow`] handle. Dropping it removes overlays
-    /// and restores gamma.
+    /// milliseconds). Returns a [`ZenWindow`] handle. Dropping it removes
+    /// overlays and restores gamma.
     ///
     /// # Errors
     ///
@@ -118,7 +147,7 @@ impl ZenWindowBuilder {
         let handle = std::thread::Builder::new()
             .name("wl-zenwindow".into())
             .spawn({
-                let config = ZenConfig::from_builder(&self);
+                let config = Config::from(&self);
                 let shutdown = Arc::clone(&shutdown);
                 move || run(&config, Some(ready_tx), &shutdown)
             })
@@ -126,7 +155,7 @@ impl ZenWindowBuilder {
 
         match ready_rx.recv() {
             Ok(()) => Ok(ZenWindow {
-                thread_handle: Some(handle),
+                handle: Some(handle),
                 shutdown,
             }),
             Err(_) => {
@@ -136,7 +165,7 @@ impl ZenWindowBuilder {
                     Ok(Err(e)) => Err(e),
                     Err(payload) => std::panic::resume_unwind(payload),
                     Ok(Ok(())) => Ok(ZenWindow {
-                        thread_handle: None,
+                        handle: None,
                         shutdown,
                     }),
                 }
@@ -157,16 +186,13 @@ impl ZenWindowBuilder {
         let handle = std::thread::Builder::new()
             .name("wl-zenwindow".into())
             .spawn({
-                let config = ZenConfig::from_builder(&self);
+                let config = Config::from(&self);
                 let shutdown = Arc::clone(&shutdown);
                 move || run(&config, None, &shutdown)
             })
             .ok();
 
-        ZenWindow {
-            thread_handle: handle,
-            shutdown,
-        }
+        ZenWindow { handle, shutdown }
     }
 }
 
@@ -175,13 +201,14 @@ impl ZenWindowBuilder {
 /// Overlay surfaces remain visible as long as this handle exists.
 /// Dropping it disconnects from Wayland, removes overlays, and restores gamma.
 pub struct ZenWindow {
-    thread_handle: Option<JoinHandle<Result<(), SpawnError>>>,
+    handle: Option<JoinHandle<Result<(), SpawnError>>>,
     shutdown: Arc<AtomicBool>,
 }
 
 /// Public API.
 impl ZenWindow {
     /// Create a new builder to configure which outputs to dim.
+    #[must_use]
     pub fn builder() -> ZenWindowBuilder {
         ZenWindowBuilder::new()
     }
@@ -191,7 +218,7 @@ impl ZenWindow {
 impl Drop for ZenWindow {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
-        if let Some(handle) = self.thread_handle.take() {
+        if let Some(handle) = self.handle.take() {
             // Give the event loop time to notice the shutdown signal and clean up.
             // The poll timeout in the event loop is 100ms, so 1 second is generous.
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
@@ -208,34 +235,9 @@ impl Drop for ZenWindow {
     }
 }
 
-/// Resolved configuration passed to the background thread.
-///
-/// Created from [`ZenWindowBuilder`] via [`from_builder`](ZenConfig::from_builder).
-/// This is a plain data struct with no builder methods — all validation and
-/// defaults are handled by the builder.
-pub(crate) struct ZenConfig {
-    /// Output names to never create surfaces on.
-    pub(crate) skip_names: HashSet<String>,
-    /// Whether to leave the focused output undimmed.
-    pub(crate) skip_active: bool,
-    /// Layer-shell namespace for overlay surfaces.
-    pub(crate) namespace: String,
-    /// Delay before connecting to Wayland and creating surfaces.
-    pub(crate) settle_delay: Option<Duration>,
-    /// Duration of the initial fade-in animation.
-    pub(crate) fade_duration: Option<Duration>,
-    /// Target alpha for dimmed overlays (0.0–1.0, already clamped).
-    pub(crate) target_opacity: f64,
-    /// RGB overlay color.
-    pub(crate) color: [u8; 3],
-    /// Target brightness for gamma dimming. `None` means gamma is untouched.
-    pub(crate) brightness: Option<f64>,
-}
-
-/// Construction from builder.
-impl ZenConfig {
-    /// Create a config by cloning all fields from a builder.
-    fn from_builder(b: &ZenWindowBuilder) -> Self {
+/// Converts builder settings into internal config.
+impl From<&ZenWindowBuilder> for Config {
+    fn from(b: &ZenWindowBuilder) -> Self {
         Self {
             skip_names: b.skip_names.clone(),
             skip_active: b.skip_active,
@@ -244,12 +246,13 @@ impl ZenConfig {
             fade_duration: b.fade_duration,
             target_opacity: b.opacity,
             color: b.color,
-            brightness: b.brightness,
+            target_brightness: b.brightness,
         }
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // Exact equality is intentional in these tests
 mod tests {
     use super::*;
 
@@ -261,7 +264,7 @@ mod tests {
         assert_eq!(b.namespace, "wl-zenwindow");
         assert!(b.settle_delay.is_none());
         assert!(b.fade_duration.is_none());
-        assert!((b.opacity - 1.0).abs() < f64::EPSILON);
+        assert_eq!(b.opacity, 1.0);
         assert_eq!(b.color, [0, 0, 0]);
         assert!(b.brightness.is_none());
     }
@@ -269,13 +272,13 @@ mod tests {
     #[test]
     fn opacity_clamped_above() {
         let b = ZenWindow::builder().opacity(1.5);
-        assert!((b.opacity - 1.0).abs() < f64::EPSILON);
+        assert_eq!(b.opacity, 1.0);
     }
 
     #[test]
     fn opacity_clamped_below() {
         let b = ZenWindow::builder().opacity(-0.5);
-        assert!((b.opacity).abs() < f64::EPSILON);
+        assert_eq!(b.opacity, 0.0);
     }
 
     #[test]
@@ -338,7 +341,7 @@ mod tests {
             .color(10, 20, 30)
             .brightness(0.6);
 
-        let config = ZenConfig::from_builder(&b);
+        let config = Config::from(&b);
 
         assert!(config.skip_names.contains("HDMI-1"));
         assert!(config.skip_active);
@@ -347,21 +350,21 @@ mod tests {
         assert_eq!(config.fade_duration, Some(Duration::from_secs(1)));
         assert!((config.target_opacity - 0.8).abs() < f64::EPSILON);
         assert_eq!(config.color, [10, 20, 30]);
-        assert_eq!(config.brightness, Some(0.6));
+        assert_eq!(config.target_brightness, Some(0.6));
     }
 
     #[test]
     fn config_from_builder_defaults() {
         let b = ZenWindowBuilder::new();
-        let config = ZenConfig::from_builder(&b);
+        let config = Config::from(&b);
 
         assert!(config.skip_names.is_empty());
         assert!(!config.skip_active);
         assert_eq!(config.namespace, "wl-zenwindow");
         assert!(config.settle_delay.is_none());
         assert!(config.fade_duration.is_none());
-        assert!((config.target_opacity - 1.0).abs() < f64::EPSILON);
+        assert_eq!(config.target_opacity, 1.0);
         assert_eq!(config.color, [0, 0, 0]);
-        assert!(config.brightness.is_none());
+        assert!(config.target_brightness.is_none());
     }
 }
