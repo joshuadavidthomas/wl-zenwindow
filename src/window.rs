@@ -10,6 +10,7 @@ use crate::error::SpawnError;
 use crate::run::run;
 
 /// Builder for configuring which outputs to dim.
+#[must_use]
 pub struct ZenWindowBuilder {
     skip_names: HashSet<String>,
     skip_active: bool,
@@ -21,7 +22,9 @@ pub struct ZenWindowBuilder {
     brightness: Option<f64>,
 }
 
+/// Builder configuration and spawn methods.
 impl ZenWindowBuilder {
+    /// Create a builder with default settings.
     fn new() -> Self {
         Self {
             skip_names: HashSet::new(),
@@ -98,12 +101,16 @@ impl ZenWindowBuilder {
     /// Spawn on a background thread.
     ///
     /// Blocks briefly until Wayland setup completes (typically a few
-    /// milliseconds). Returns a [`SpawnError`] if the Wayland connection
-    /// fails, a required protocol is missing, or the thread cannot be
-    /// created.
+    /// milliseconds).
     ///
     /// Returns a [`ZenWindow`] handle. Dropping it removes overlays
     /// and restores gamma.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpawnError`] if the Wayland connection fails, a required
+    /// protocol is missing, setup fails after connecting, or the background
+    /// thread cannot be created.
     pub fn spawn(self) -> Result<ZenWindow, SpawnError> {
         let (ready_tx, ready_rx) = mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -113,13 +120,13 @@ impl ZenWindowBuilder {
             .spawn({
                 let config = ZenConfig::from_builder(&self);
                 let shutdown = Arc::clone(&shutdown);
-                move || run(config, Some(ready_tx), shutdown)
+                move || run(&config, Some(ready_tx), &shutdown)
             })
             .map_err(SpawnError::ThreadSpawn)?;
 
         match ready_rx.recv() {
             Ok(()) => Ok(ZenWindow {
-                _handle: Some(handle),
+                thread_handle: Some(handle),
                 shutdown,
             }),
             Err(_) => {
@@ -129,7 +136,7 @@ impl ZenWindowBuilder {
                     Ok(Err(e)) => Err(e),
                     Err(payload) => std::panic::resume_unwind(payload),
                     Ok(Ok(())) => Ok(ZenWindow {
-                        _handle: None,
+                        thread_handle: None,
                         shutdown,
                     }),
                 }
@@ -143,6 +150,7 @@ impl ZenWindowBuilder {
     /// in the background. If setup fails, it fails silently.
     ///
     /// Returns a [`ZenWindow`] handle. Dropping it removes overlays.
+    #[must_use]
     pub fn spawn_nonblocking(self) -> ZenWindow {
         let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -151,12 +159,12 @@ impl ZenWindowBuilder {
             .spawn({
                 let config = ZenConfig::from_builder(&self);
                 let shutdown = Arc::clone(&shutdown);
-                move || run(config, None, shutdown)
+                move || run(&config, None, &shutdown)
             })
             .ok();
 
         ZenWindow {
-            _handle: handle,
+            thread_handle: handle,
             shutdown,
         }
     }
@@ -167,10 +175,11 @@ impl ZenWindowBuilder {
 /// Overlay surfaces remain visible as long as this handle exists.
 /// Dropping it disconnects from Wayland, removes overlays, and restores gamma.
 pub struct ZenWindow {
-    _handle: Option<JoinHandle<Result<(), SpawnError>>>,
+    thread_handle: Option<JoinHandle<Result<(), SpawnError>>>,
     shutdown: Arc<AtomicBool>,
 }
 
+/// Public API.
 impl ZenWindow {
     /// Create a new builder to configure which outputs to dim.
     pub fn builder() -> ZenWindowBuilder {
@@ -178,10 +187,11 @@ impl ZenWindow {
     }
 }
 
+/// Signals shutdown, waits for the background thread to clean up, and joins it.
 impl Drop for ZenWindow {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
-        if let Some(handle) = self._handle.take() {
+        if let Some(handle) = self.thread_handle.take() {
             // Give the event loop time to notice the shutdown signal and clean up.
             // The poll timeout in the event loop is 100ms, so 1 second is generous.
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
@@ -198,18 +208,33 @@ impl Drop for ZenWindow {
     }
 }
 
+/// Resolved configuration passed to the background thread.
+///
+/// Created from [`ZenWindowBuilder`] via [`from_builder`](ZenConfig::from_builder).
+/// This is a plain data struct with no builder methods — all validation and
+/// defaults are handled by the builder.
 pub(crate) struct ZenConfig {
+    /// Output names to never create surfaces on.
     pub(crate) skip_names: HashSet<String>,
+    /// Whether to leave the focused output undimmed.
     pub(crate) skip_active: bool,
+    /// Layer-shell namespace for overlay surfaces.
     pub(crate) namespace: String,
+    /// Delay before connecting to Wayland and creating surfaces.
     pub(crate) settle_delay: Option<Duration>,
+    /// Duration of the initial fade-in animation.
     pub(crate) fade_duration: Option<Duration>,
+    /// Target alpha for dimmed overlays (0.0–1.0, already clamped).
     pub(crate) target_opacity: f64,
+    /// RGB overlay color.
     pub(crate) color: [u8; 3],
+    /// Target brightness for gamma dimming. `None` means gamma is untouched.
     pub(crate) brightness: Option<f64>,
 }
 
+/// Construction from builder.
 impl ZenConfig {
+    /// Create a config by cloning all fields from a builder.
     fn from_builder(b: &ZenWindowBuilder) -> Self {
         Self {
             skip_names: b.skip_names.clone(),
@@ -236,7 +261,7 @@ mod tests {
         assert_eq!(b.namespace, "wl-zenwindow");
         assert!(b.settle_delay.is_none());
         assert!(b.fade_duration.is_none());
-        assert_eq!(b.opacity, 1.0);
+        assert!((b.opacity - 1.0).abs() < f64::EPSILON);
         assert_eq!(b.color, [0, 0, 0]);
         assert!(b.brightness.is_none());
     }
@@ -244,13 +269,13 @@ mod tests {
     #[test]
     fn opacity_clamped_above() {
         let b = ZenWindow::builder().opacity(1.5);
-        assert_eq!(b.opacity, 1.0);
+        assert!((b.opacity - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn opacity_clamped_below() {
         let b = ZenWindow::builder().opacity(-0.5);
-        assert_eq!(b.opacity, 0.0);
+        assert!((b.opacity).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -335,7 +360,7 @@ mod tests {
         assert_eq!(config.namespace, "wl-zenwindow");
         assert!(config.settle_delay.is_none());
         assert!(config.fade_duration.is_none());
-        assert_eq!(config.target_opacity, 1.0);
+        assert!((config.target_opacity - 1.0).abs() < f64::EPSILON);
         assert_eq!(config.color, [0, 0, 0]);
         assert!(config.brightness.is_none());
     }

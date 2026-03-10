@@ -15,6 +15,19 @@ use wayland_protocols_wlr::gamma_control::v1::client::zwlr_gamma_control_v1::{
 use crate::state::GammaState;
 use crate::state::ZenState;
 
+/// Clamp an `f64` to the `u16` range and convert.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn clamp_u16(value: f64) -> u16 {
+    // After clamping to [0, 65535], the cast is lossless.
+    value.round().clamp(0.0, f64::from(u16::MAX)) as u16
+}
+
+/// Build a linear gamma ramp scaled by `brightness` and return it as a memfd.
+///
+/// Creates an in-memory file containing three identical channels (R, G, B),
+/// each with `size` entries of `u16` values forming a linear ramp from 0 to
+/// `65535 * brightness`. The file is seeked back to the start so it can be
+/// passed directly to `zwlr_gamma_control_v1::set_gamma`.
 pub(crate) fn create_gamma_ramp(size: u32, brightness: f64) -> std::io::Result<std::fs::File> {
     let name = std::ffi::CString::new("wl-zenwindow-gamma").unwrap();
     let raw_fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
@@ -23,13 +36,15 @@ pub(crate) fn create_gamma_ramp(size: u32, brightness: f64) -> std::io::Result<s
     }
 
     let mut file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
-    let n = size as usize;
-    let divisor = n.saturating_sub(1).max(1) as f64;
+    let n = usize::try_from(size).expect("u32 always fits in usize");
+    let entries = size.saturating_sub(1).max(1);
 
     let mut ramp = Vec::with_capacity(n * 3 * 2);
-    for _ in 0..3 {
-        for i in 0..n {
-            let value = (i as f64 / divisor * 65535.0 * brightness) as u16;
+    for _ in 0..3u8 {
+        for i in 0..size {
+            // i / entries is in [0, 1], so scaled value is in [0, 65535].
+            let normalized = f64::from(i) / f64::from(entries);
+            let value = clamp_u16(normalized * 65_535.0 * brightness);
             ramp.extend_from_slice(&value.to_ne_bytes());
         }
     }
@@ -39,7 +54,14 @@ pub(crate) fn create_gamma_ramp(size: u32, brightness: f64) -> std::io::Result<s
     Ok(file)
 }
 
+/// Gamma control methods.
 impl ZenState {
+    /// Apply a dimmed gamma ramp to all non-skipped surfaces that have gamma control.
+    ///
+    /// Iterates over surfaces and sends a scaled gamma ramp to each output's
+    /// `zwlr_gamma_control_v1` instance. Surfaces without gamma control
+    /// (because the protocol is unavailable or another client holds it) are
+    /// silently skipped.
     pub(crate) fn set_gamma_dimmed(&self, brightness: f64) {
         for (idx, surface) in self.surfaces.iter().enumerate() {
             if self.is_skipped(idx) {
@@ -59,18 +81,25 @@ impl ZenState {
     }
 }
 
+/// No-op dispatch — the gamma control manager has no client-side events.
 impl Dispatch<ZwlrGammaControlManagerV1, ()> for ZenState {
     fn event(
         _: &mut Self,
         _: &ZwlrGammaControlManagerV1,
         _: <ZwlrGammaControlManagerV1 as wayland_client::Proxy>::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
     }
 }
 
+/// Handles per-output gamma control events.
+///
+/// - `GammaSize` — transitions the surface's gamma state from `Pending` to
+///   `Ready` with the ramp size reported by the compositor.
+/// - `Failed` — another client already holds gamma control on this output;
+///   resets the surface's gamma state to `Unavailable`.
 impl Dispatch<ZwlrGammaControlV1, usize> for ZenState {
     fn event(
         state: &mut Self,
@@ -151,8 +180,8 @@ mod tests {
     #[test]
     fn gamma_ramp_half_brightness() {
         let values = read_ramp(256, 0.5);
-        // Last entry of first channel: 65535 * 0.5 = 32767
-        assert_eq!(values[255], 32767);
+        // Last entry of first channel: round(65535 * 0.5) = round(32767.5) = 32768
+        assert_eq!(values[255], 32768);
     }
 
     #[test]

@@ -19,7 +19,10 @@ pub enum SpawnError {
     /// `"zwlr_layer_shell_v1"`, `"wl_shm"`).
     #[error("required Wayland protocol unavailable: {protocol}")]
     MissingProtocol {
+        /// The Wayland global interface name that was not found
+        /// (e.g. `"wl_compositor"`, `"zwlr_layer_shell_v1"`).
         protocol: &'static str,
+        /// The underlying error from the registry bind attempt.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },

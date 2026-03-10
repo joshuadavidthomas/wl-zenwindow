@@ -1,15 +1,28 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::state::opacity_to_alpha;
 use crate::state::ZenState;
+
+/// Convert an eased opacity fraction (0.0–1.0) to a `u32` alpha multiplier
+/// for the `wp_alpha_modifier_v1` protocol (0–`u32::MAX`).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn opacity_to_multiplier(opacity: f64) -> u32 {
+    // After clamping to [0, u32::MAX], the cast is lossless.
+    (opacity * f64::from(u32::MAX))
+        .round()
+        .clamp(0.0, f64::from(u32::MAX)) as u32
+}
 
 /// Fade-out transition on the newly active output.
 pub(crate) struct Transition {
+    /// When this transition started.
     pub(crate) start: Instant,
-    /// Wait for the window to settle before fading
+    /// Wait for the window to settle before fading.
     pub(crate) delay: Duration,
+    /// How long the fade animation takes.
     pub(crate) duration: Duration,
-    /// Output being revealed (becoming active, overlay fading OUT)
+    /// Output being revealed (becoming active, overlay fading OUT).
     pub(crate) revealing: Option<String>,
 }
 
@@ -25,6 +38,10 @@ pub(crate) enum TransitionTick {
     Done { alpha: u8 },
 }
 
+/// Quadratic ease-out: fast start, decelerating finish.
+///
+/// Maps `t` in `[0.0, 1.0]` to an eased value in the same range.
+/// Formula: `1 - (1 - t)²`.
 pub(crate) fn ease_out_quad(t: f64) -> f64 {
     1.0 - (1.0 - t) * (1.0 - t)
 }
@@ -34,8 +51,11 @@ pub(crate) fn ease_out_quad(t: f64) -> f64 {
 /// Computes per-frame alpha and brightness values from elapsed time,
 /// without touching any Wayland state.
 pub(crate) struct FadeIn {
+    /// Total duration of the fade-in animation.
     pub(crate) duration: Duration,
+    /// Target overlay opacity (0.0–1.0).
     pub(crate) target_opacity: f64,
+    /// Target monitor brightness (1.0 = full, lower = dimmer).
     pub(crate) target_brightness: f64,
 }
 
@@ -44,7 +64,7 @@ pub(crate) struct FadeIn {
 pub(crate) struct FadeFrame {
     /// Alpha as a u8 (0–255) for the software rendering path.
     pub(crate) alpha: u8,
-    /// Alpha as a u32 multiplier (0–u32::MAX) for the alpha-modifier protocol.
+    /// Alpha as a u32 multiplier (`0–u32::MAX`) for the alpha-modifier protocol.
     pub(crate) multiplier: u32,
     /// Current brightness (1.0 = full, interpolated toward target).
     pub(crate) brightness: f64,
@@ -52,14 +72,15 @@ pub(crate) struct FadeFrame {
     pub(crate) done: bool,
 }
 
+/// Frame computation.
 impl FadeIn {
     /// Compute the frame values at a given elapsed time.
     pub(crate) fn frame_at(&self, elapsed: Duration) -> FadeFrame {
         let t = (elapsed.as_secs_f64() / self.duration.as_secs_f64()).min(1.0);
         let eased = ease_out_quad(t);
 
-        let alpha = (eased * self.target_opacity * 255.0) as u8;
-        let multiplier = (eased * self.target_opacity * u32::MAX as f64) as u32;
+        let alpha = opacity_to_alpha(eased * self.target_opacity);
+        let multiplier = opacity_to_multiplier(eased * self.target_opacity);
         let brightness = 1.0 - eased * (1.0 - self.target_brightness);
 
         FadeFrame {
@@ -71,6 +92,7 @@ impl FadeIn {
     }
 }
 
+/// Tick computation.
 impl Transition {
     /// Pure computation: given elapsed time and target opacity, return what
     /// the caller should do (wait, draw at alpha, or finish).
@@ -79,10 +101,10 @@ impl Transition {
             return TransitionTick::Waiting;
         }
 
-        let fade_elapsed = elapsed - self.delay;
+        let fade_elapsed = elapsed.checked_sub(self.delay).unwrap();
         let t = (fade_elapsed.as_secs_f64() / self.duration.as_secs_f64()).min(1.0);
         let eased = ease_out_quad(t);
-        let alpha = ((1.0 - eased) * target_opacity * 255.0) as u8;
+        let alpha = opacity_to_alpha((1.0 - eased) * target_opacity);
 
         if t >= 1.0 {
             TransitionTick::Done { alpha }
@@ -92,6 +114,7 @@ impl Transition {
     }
 }
 
+/// Cross-fade transition management.
 impl ZenState {
     /// Returns true if a cross-fade transition is in progress.
     pub(crate) fn is_transitioning(&self) -> bool {
@@ -100,9 +123,8 @@ impl ZenState {
 
     /// Tick the cross-fade transition. Returns true if still animating.
     pub(crate) fn tick_transition(&mut self) -> bool {
-        let transition = match &self.transition {
-            Some(t) => t,
-            None => return false,
+        let Some(transition) = &self.transition else {
+            return false;
         };
 
         let elapsed = transition.start.elapsed();
@@ -162,7 +184,7 @@ mod tests {
 
     #[test]
     fn ease_out_quad_is_monotonic() {
-        let steps: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).collect();
+        let steps: Vec<f64> = (0..=100).map(|i| f64::from(i) / 100.0).collect();
         for pair in steps.windows(2) {
             assert!(
                 ease_out_quad(pair[1]) >= ease_out_quad(pair[0]),
@@ -201,10 +223,10 @@ mod tests {
     fn tick_midway_through_fade() {
         let t = test_transition();
         // delay=100ms, duration=200ms, elapsed=200ms → fade_elapsed=100ms → t=0.5
-        // eased = 0.75, alpha = (1-0.75) * 1.0 * 255 = 63
+        // eased = 0.75, alpha = round((1-0.75) * 1.0 * 255) = round(63.75) = 64
         let tick = t.tick(Duration::from_millis(200), 1.0);
         match tick {
-            TransitionTick::Fading { alpha } => assert_eq!(alpha, 63),
+            TransitionTick::Fading { alpha } => assert_eq!(alpha, 64),
             other => panic!("expected Fading, got {other:?}"),
         }
     }
@@ -228,10 +250,10 @@ mod tests {
     #[test]
     fn tick_respects_target_opacity() {
         let t = test_transition();
-        // At start of fade (t=0), alpha = (1-0) * 0.5 * 255 = 127
+        // At start of fade (t=0), alpha = round((1-0) * 0.5 * 255) = round(127.5) = 128
         let tick = t.tick(Duration::from_millis(100), 0.5);
         match tick {
-            TransitionTick::Fading { alpha } => assert_eq!(alpha, 127),
+            TransitionTick::Fading { alpha } => assert_eq!(alpha, 128),
             other => panic!("expected Fading, got {other:?}"),
         }
     }
@@ -328,9 +350,9 @@ mod tests {
             target_opacity: 0.5,
             target_brightness: 1.0,
         };
-        // At end: alpha = 1.0 * 0.5 * 255 = 127
+        // At end: alpha = round(1.0 * 0.5 * 255) = round(127.5) = 128
         let frame = fade.frame_at(Duration::from_millis(500));
-        assert_eq!(frame.alpha, 127);
+        assert_eq!(frame.alpha, 128);
         assert!(frame.done);
     }
 
@@ -343,7 +365,7 @@ mod tests {
         };
         // At end: multiplier = 1.0 * 0.5 * u32::MAX
         let frame = fade.frame_at(Duration::from_millis(500));
-        let expected = (0.5 * u32::MAX as f64) as u32;
+        let expected = opacity_to_multiplier(0.5);
         assert_eq!(frame.multiplier, expected);
     }
 

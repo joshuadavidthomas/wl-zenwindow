@@ -1,4 +1,25 @@
-use gpui::*;
+//! Example: fullscreen GPUI window with dimmed monitors.
+#![allow(missing_docs)] // GPUI macros generate undocumented items
+
+use gpui::actions;
+use gpui::div;
+use gpui::point;
+use gpui::px;
+use gpui::rgb;
+use gpui::size;
+use gpui::App;
+use gpui::AppContext;
+use gpui::Application;
+use gpui::Bounds;
+use gpui::Context;
+use gpui::IntoElement;
+use gpui::KeyBinding;
+use gpui::ParentElement;
+use gpui::Render;
+use gpui::Styled;
+use gpui::Window;
+use gpui::WindowBounds;
+use gpui::WindowOptions;
 
 actions!(gpui_example, [Quit]);
 
@@ -8,13 +29,13 @@ impl Render for ZenView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
-            .bg(rgb(0x1c1c1c))
+            .bg(rgb(0x001C_1C1C))
             .flex()
             .items_center()
             .justify_center()
             .child(
                 div()
-                    .text_color(rgb(0xd4d4d4))
+                    .text_color(rgb(0x00D4_D4D4))
                     .text_size(px(18.))
                     .child("Press Escape to quit"),
             )

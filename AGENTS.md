@@ -18,5 +18,8 @@ just fmt                         # Format code (requires nightly)
 ## Clippy/Fmt scope
 When running `just clippy` or `just fmt`, all resulting changes are in scope for the current task. Nothing is "unrelated" just because tooling touched it. Do not revert or ignore clippy/fmt changes as "unrelated" noise.
 
+## Clippy lints
+**Never blanket-allow clippy lints.** Do not add `allow` entries to `[lints.clippy]` in `Cargo.toml` to silence warnings. Fix the code instead. If a specific line genuinely cannot be fixed (e.g., an unavoidable cast in an unsafe block), use a targeted `#[allow(...)]` on that expression or function with a comment explaining why.
+
 ## Testing
 **All tests must pass.** If a test fails, it is your responsibility to fix it — even if you didn't cause the failure. Never dismiss failures as "pre-existing" or "unrelated".
