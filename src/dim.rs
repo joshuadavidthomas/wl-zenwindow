@@ -25,6 +25,7 @@
 //!
 //! - [`fade_in_frame`] — startup animation, all outputs together
 //! - [`tick`] — cross-fade on the revealing output only
+//! - [`reveal_output`] — choreographed reveal after `spawn_with` callback
 //! - [`snap_to_target`] — instant jump, no animation
 //! - [`snap_all_to_dimmed`] — emergency snap during window drag
 
@@ -71,7 +72,6 @@ pub struct OutputUpdate {
 pub struct DimController {
     target_opacity: f64,
     target_brightness: f64,
-    skip_active: bool,
 
     /// Per-output dimming state
     outputs: HashMap<String, OutputDimState>,
@@ -92,20 +92,18 @@ struct Transition {
 }
 
 impl DimController {
-    pub fn new(target_opacity: f64, target_brightness: Option<f64>, skip_active: bool) -> Self {
+    pub fn new(target_opacity: f64, target_brightness: Option<f64>) -> Self {
         Self {
             target_opacity,
             target_brightness: target_brightness.unwrap_or(1.0),
-            skip_active,
             outputs: HashMap::new(),
             active: None,
             transition: None,
         }
     }
 
-    /// Register an output. Starts at target dimming unless it's the active output.
+    /// Register an output. Active outputs are skipped (left undimmed).
     pub fn add_output(&mut self, name: String, is_active: bool) {
-        let skipped = self.skip_active && is_active;
         if is_active {
             self.active = Some(name.clone());
         }
@@ -116,7 +114,7 @@ impl DimController {
                 // and 1.0 brightness (normal gamma). The fade-in will animate them.
                 alpha: 0.0,
                 brightness: 1.0,
-                skipped,
+                skipped: is_active,
             },
         );
     }
@@ -155,9 +153,6 @@ impl DimController {
 
     /// Focus changed to a new output. Returns immediate updates and starts transition.
     pub fn focus_changed(&mut self, new_active: Option<String>) -> DimUpdates {
-        if !self.skip_active {
-            return DimUpdates::default();
-        }
         if self.active == new_active {
             return DimUpdates::default();
         }
@@ -307,6 +302,24 @@ impl DimController {
         self.transition = None;
     }
 
+    /// Reveal a specific output after a choreographed launch.
+    ///
+    /// Marks the output as the active (skipped) output and starts a
+    /// transition to fade its overlay from target opacity to transparent.
+    /// After the reveal animation completes, normal focus tracking takes over.
+    pub fn reveal_output(&mut self, name: &str) {
+        self.active = Some(name.to_string());
+        if let Some(state) = self.outputs.get_mut(name) {
+            state.skipped = true;
+        }
+        self.transition = Some(Transition {
+            start: Instant::now(),
+            delay: Duration::from_millis(50),
+            duration: Duration::from_millis(200),
+            revealing: name.to_string(),
+        });
+    }
+
     /// Snap ALL outputs to dimmed state (overlays opaque).
     /// Used during window movement to prevent flash.
     pub fn snap_all_to_dimmed(&mut self) -> DimUpdates {
@@ -338,7 +351,7 @@ mod tests {
 
     #[test]
     fn new_output_starts_at_zero_alpha() {
-        let mut ctrl = DimController::new(0.8, Some(0.5), true);
+        let mut ctrl = DimController::new(0.8, Some(0.5));
         ctrl.add_output("DP-1".into(), false);
 
         let state = ctrl.get("DP-1").unwrap();
@@ -349,7 +362,7 @@ mod tests {
 
     #[test]
     fn active_output_is_skipped() {
-        let mut ctrl = DimController::new(0.8, Some(0.5), true);
+        let mut ctrl = DimController::new(0.8, Some(0.5));
         ctrl.add_output("DP-1".into(), true);
 
         assert!(ctrl.is_output_skipped("DP-1"));
@@ -358,7 +371,7 @@ mod tests {
 
     #[test]
     fn focus_change_dims_old_reveals_new() {
-        let mut ctrl = DimController::new(0.8, Some(0.5), true);
+        let mut ctrl = DimController::new(0.8, Some(0.5));
         ctrl.add_output("DP-1".into(), true);
         ctrl.add_output("DP-2".into(), false);
 
@@ -382,7 +395,7 @@ mod tests {
 
     #[test]
     fn tick_animates_revealing_output() {
-        let mut ctrl = DimController::new(1.0, Some(0.5), true);
+        let mut ctrl = DimController::new(1.0, Some(0.5));
         ctrl.add_output("DP-1".into(), true);
         ctrl.add_output("DP-2".into(), false);
 
@@ -410,7 +423,7 @@ mod tests {
 
     #[test]
     fn fade_in_frame_respects_skipped() {
-        let mut ctrl = DimController::new(0.8, Some(0.5), true);
+        let mut ctrl = DimController::new(0.8, Some(0.5));
         ctrl.add_output("DP-1".into(), true); // active, skipped
         ctrl.add_output("DP-2".into(), false); // not skipped
 
@@ -430,7 +443,7 @@ mod tests {
 
     #[test]
     fn remove_output_clears_transition() {
-        let mut ctrl = DimController::new(1.0, Some(0.5), true);
+        let mut ctrl = DimController::new(1.0, Some(0.5));
         ctrl.add_output("DP-1".into(), true);
         ctrl.add_output("DP-2".into(), false);
 
@@ -450,7 +463,7 @@ mod tests {
 
     #[test]
     fn snap_to_target_sets_final_values() {
-        let mut ctrl = DimController::new(0.8, Some(0.4), true);
+        let mut ctrl = DimController::new(0.8, Some(0.4));
         ctrl.add_output("DP-1".into(), true);
         ctrl.add_output("DP-2".into(), false);
 
@@ -463,5 +476,24 @@ mod tests {
         assert_eq!(dp1.brightness.as_f64(), 1.0);
         assert_eq!(dp2.opacity.as_f64(), 0.8);
         assert_eq!(dp2.brightness.as_f64(), 0.4);
+    }
+
+    #[test]
+    fn reveal_output_starts_transition() {
+        let mut ctrl = DimController::new(0.8, Some(0.5));
+        ctrl.add_output("DP-1".into(), false);
+        ctrl.add_output("DP-2".into(), false);
+
+        // Simulate post-fade-in state: both at target
+        ctrl.outputs.get_mut("DP-1").unwrap().alpha = 0.8;
+        ctrl.outputs.get_mut("DP-1").unwrap().brightness = 0.5;
+        ctrl.outputs.get_mut("DP-2").unwrap().alpha = 0.8;
+        ctrl.outputs.get_mut("DP-2").unwrap().brightness = 0.5;
+
+        ctrl.reveal_output("DP-1");
+
+        assert!(ctrl.is_animating());
+        assert!(ctrl.is_output_skipped("DP-1"));
+        assert_eq!(ctrl.active_output(), Some("DP-1"));
     }
 }

@@ -14,6 +14,8 @@
 //!
 //! - **`FadingIn`** — Initial animation. Both backdrops and overlays animate
 //!   from transparent to target together.
+//! - **`WaitingForReveal`** — After a `spawn_with` callback. Polls for a new
+//!   fullscreen toplevel (or timeout) before revealing the active output.
 //! - **`Running`** — Steady state. Only overlays participate in focus
 //!   transitions; backdrops stay at target opacity as a safety net.
 //! - **`ShuttingDown`** — Cleanup.
@@ -26,13 +28,17 @@
 //!
 //! This separation keeps dimming logic testable without Wayland.
 
+use std::time::Instant;
+
 use smithay_client_toolkit::shell::wlr_layer::Anchor;
 use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use smithay_client_toolkit::shell::WaylandSurface;
+use wayland_client::backend::ObjectId;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::Proxy as _;
 use wayland_client::QueueHandle;
+use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::State as ToplevelState;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 
 use crate::dim::DimController;
@@ -46,16 +52,32 @@ use crate::render::SurfaceRole;
 use crate::wayland::TrackedToplevel;
 use crate::wayland::Wayland;
 use crate::window::Config;
+use crate::window::SpawnMode;
 
 /// Which phase of the event loop we're in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppPhase {
     /// Initial fade-in animation.
     FadingIn,
+    /// Waiting for a new toplevel to appear after a `spawn_with` callback.
+    WaitingForReveal,
     /// Steady state — overlays are up, handling focus transitions.
     Running,
     /// Shutting down.
     ShuttingDown,
+}
+
+/// Timeout before revealing regardless of toplevel state.
+const REVEAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// State for the `spawn_with` reveal sequence.
+struct RevealState {
+    /// Toplevel IDs that existed before the callback was called.
+    /// A Vec rather than `HashSet` because `ObjectId` has interior mutability
+    /// (`AtomicBool` for lifecycle tracking) and the toplevel count is tiny.
+    snapshot: Vec<ObjectId>,
+    /// Deadline after which we reveal regardless of toplevel state.
+    deadline: Instant,
 }
 
 /// The main application state — Wayland dispatch target.
@@ -72,6 +94,8 @@ pub struct App {
     phase: AppPhase,
     /// Dimming state machine.
     dim: DimController,
+    /// State for `spawn_with` reveal sequencing.
+    reveal: Option<RevealState>,
 }
 
 impl App {
@@ -86,6 +110,7 @@ impl App {
             toplevels: Vec::new(),
             phase,
             dim,
+            reveal: None,
         }
     }
 
@@ -148,9 +173,13 @@ impl App {
             self.create_surface(&output, output_name.clone(), SurfaceRole::Backdrop, qh);
             self.create_surface(&output, output_name.clone(), SurfaceRole::Overlay, qh);
 
-            // Register with DimController
+            // Register with DimController.
+            // For SpawnWith, no output is skipped during fade-in — everything
+            // fades to opaque so the callback's window launches behind it.
+            // The reveal will set the active output afterward.
             if let Some(ref name) = output_name {
-                let is_active = self.dim.active_output() == Some(name.as_str());
+                let is_active = self.config.spawn_mode == SpawnMode::Standard
+                    && self.dim.active_output() == Some(name.as_str());
                 self.dim.add_output(name.clone(), is_active);
             }
         }
@@ -372,6 +401,74 @@ impl App {
     pub fn tick_transition(&mut self) {
         let updates = self.dim.tick();
         self.apply_updates(&updates);
+    }
+
+    /// Snapshot current toplevels and start waiting for a new one to appear.
+    pub fn begin_waiting_for_reveal(&mut self) {
+        let snapshot = self
+            .toplevels
+            .iter()
+            .map(super::wayland::TrackedToplevel::handle_id)
+            .collect();
+        self.reveal = Some(RevealState {
+            snapshot,
+            deadline: Instant::now() + REVEAL_TIMEOUT,
+        });
+        self.phase = AppPhase::WaitingForReveal;
+    }
+
+    /// Check if the reveal should trigger and do it if so.
+    ///
+    /// Returns `true` if the reveal was triggered (phase transitions to Running).
+    pub fn check_reveal(&mut self) -> bool {
+        let Some(reveal) = &self.reveal else {
+            return false;
+        };
+
+        // Happy path: new toplevel with fullscreen state
+        let new_fullscreen_output = self
+            .toplevels
+            .iter()
+            .filter(|t| !reveal.snapshot.iter().any(|id| *id == t.handle_id()))
+            .find(|t| t.has_state(ToplevelState::Fullscreen))
+            .and_then(|t| t.output())
+            .and_then(|output| self.wl.output_state.info(output))
+            .and_then(|info| info.name.clone());
+
+        if let Some(name) = new_fullscreen_output {
+            self.trigger_reveal(&name);
+            return true;
+        }
+
+        // Timeout fallback: reveal whatever output is active
+        if Instant::now() >= reveal.deadline {
+            // Try new toplevel's output first, then active output
+            let output = self
+                .toplevels
+                .iter()
+                .filter(|t| !reveal.snapshot.iter().any(|id| *id == t.handle_id()))
+                .find_map(|t| t.output())
+                .and_then(|output| self.wl.output_state.info(output))
+                .and_then(|info| info.name.clone())
+                .or_else(|| self.active_output_name());
+
+            if let Some(name) = output {
+                self.trigger_reveal(&name);
+            } else {
+                // No output to reveal — just go to running state
+                self.reveal = None;
+                self.phase = AppPhase::Running;
+            }
+            return true;
+        }
+
+        false
+    }
+
+    fn trigger_reveal(&mut self, output_name: &str) {
+        self.dim.reveal_output(output_name);
+        self.reveal = None;
+        self.phase = AppPhase::Running;
     }
 
     /// Immediately dim ALL outputs (snap all overlays to opaque).

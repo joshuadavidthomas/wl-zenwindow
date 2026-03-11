@@ -8,6 +8,7 @@ Works with any compositor that supports `wlr-layer-shell`: Sway, Hyprland, Niri,
 
 - Tracks the focused window and keeps its monitor undimmed
 - Cross-fades overlays when focus moves between monitors
+- Choreographed launch mode: fade to black, launch an app, reveal it
 - Optionally dims monitor brightness via gamma control (falls back if another client like wlsunset already has it)
 - Configurable overlay color, opacity, fade duration, and settle delay
 - Dropping the handle removes overlays and restores gamma
@@ -32,35 +33,18 @@ See the [API documentation](https://docs.rs/wl-zenwindow) for the full builder A
 
 ## Getting started
 
-The simplest thing you can do is put a black overlay on every monitor:
+The simplest usage dims all monitors except the one with the focused window:
 
 ```rust
 use wl_zenwindow::ZenWindow;
 
-fn main() {
-    let _zen = ZenWindow::builder()
-        .spawn()
-        .expect("failed to start overlays");
-
-    // Overlays stay up as long as `_zen` is alive.
-    // Park the thread so the program doesn't exit immediately.
-    std::thread::park();
-}
-```
-
-`spawn()` connects to Wayland, creates overlay surfaces on each output, and returns a handle. The overlays live as long as the handle does — drop it and they disappear.
-
-Dimming *all* monitors isn't very useful though. Add `skip_active()` to leave the monitor with the focused window clear, and `opacity()` to make the overlays translucent so you can still see what's behind them:
-
-```rust
 let _zen = ZenWindow::builder()
-    .skip_active()
     .opacity(0.85)
     .spawn()
     .expect("failed to start overlays");
 ```
 
-Now when you move focus to a different monitor, the overlay follows — the old monitor dims and the new one clears.
+`spawn()` connects to Wayland, creates overlay surfaces on each output, and returns a handle. Focus tracking is automatic — when you move focus to a different monitor, the overlay follows. The overlays live as long as the handle does; drop it and they disappear.
 
 Overlays only darken the visual — the backlight stays at full brightness. If your compositor supports `zwlr_gamma_control_v1`, add `brightness()` to dim the actual monitor brightness too. And `fade_in()` keeps the overlays from snapping on instantly:
 
@@ -68,7 +52,6 @@ Overlays only darken the visual — the backlight stays at full brightness. If y
 use std::time::Duration;
 
 let _zen = ZenWindow::builder()
-    .skip_active()
     .opacity(0.85)
     .brightness(0.7)
     .fade_in(Duration::from_millis(500))
@@ -88,9 +71,28 @@ Or just let it go out of scope. There's no explicit cleanup API to call.
 
 ## Usage
 
+### Choreographed launch
+
+Use `spawn_with()` to launch an application with a cinematic entrance. The library fades all outputs to target opacity, calls your callback (the app launches behind the opaque overlays), then reveals the output where the new window appears:
+
+```rust
+use std::process::Command;
+use std::time::Duration;
+
+let _zen = ZenWindow::builder()
+    .opacity(0.85)
+    .fade_in(Duration::from_millis(300))
+    .spawn_with(|| {
+        Command::new("my-fullscreen-app").spawn().unwrap();
+    })
+    .expect("failed to start overlays");
+```
+
+The user sees: desktop → smooth fade to dark → smooth reveal of the settled window. After the reveal, focus tracking is active — the focused output stays undimmed while others remain dimmed.
+
 ### Dimming only specific monitors
 
-If you want to always dim certain monitors regardless of focus, use `skip_output()` to exclude them by their Wayland name:
+If you want to always leave certain monitors undimmed regardless of focus, use `skip_output()` to exclude them by their Wayland name:
 
 ```rust
 // Only dim DP-2 and HDMI-1; leave DP-1 and eDP-1 alone
@@ -103,16 +105,6 @@ let _zen = ZenWindow::builder()
 
 You can find your output names with `swaymsg -t get_outputs`, `hyprctl monitors`, or `wlr-randr`.
 
-Combine `skip_output()` with `skip_active()` to dim everything except specific monitors *and* the focused one:
-
-```rust
-let _zen = ZenWindow::builder()
-    .skip_output("eDP-1") // never dim the laptop screen
-    .skip_active()         // also skip whichever monitor has focus
-    .spawn()
-    .expect("failed to start overlays");
-```
-
 ### Handling errors
 
 `spawn()` returns a `Result<ZenWindow, SpawnError>`. If you want to fall back gracefully instead of crashing:
@@ -120,7 +112,7 @@ let _zen = ZenWindow::builder()
 ```rust
 use wl_zenwindow::{ZenWindow, SpawnError};
 
-let zen = match ZenWindow::builder().skip_active().spawn() {
+let zen = match ZenWindow::builder().spawn() {
     Ok(handle) => Some(handle),
     Err(SpawnError::WaylandConnection(_)) => {
         eprintln!("not running on Wayland, skipping overlays");
@@ -141,7 +133,6 @@ If you don't care about errors at all, `spawn_nonblocking()` returns a handle di
 
 ```rust
 let _zen = ZenWindow::builder()
-    .skip_active()
     .spawn_nonblocking();
 ```
 
@@ -153,7 +144,6 @@ When launching overlays alongside a UI window, the window needs time to appear a
 use std::time::Duration;
 
 let _zen = ZenWindow::builder()
-    .skip_active()
     .settle_delay(Duration::from_millis(200))
     .fade_in(Duration::from_millis(500))
     .spawn_nonblocking();
@@ -176,7 +166,6 @@ If you see the wrong monitor dim briefly on startup, increase the settle delay. 
 use std::time::Duration;
 
 let _zen = ZenWindow::builder()
-    .skip_active()
     .settle_delay(Duration::from_millis(300)) // wait for window to settle
     .fade_in(Duration::from_millis(400))      // smooth fade-in
     .spawn()

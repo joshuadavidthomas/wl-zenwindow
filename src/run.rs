@@ -56,6 +56,7 @@ pub(crate) fn run(
     config: &Config,
     ready_tx: Option<mpsc::Sender<()>>,
     shutdown: &Arc<AtomicBool>,
+    spawn_callback: Option<Box<dyn FnOnce() + Send>>,
 ) -> Result<(), SpawnError> {
     if let Some(delay) = config.settle_delay {
         std::thread::sleep(delay);
@@ -88,11 +89,7 @@ pub(crate) fn run(
     let viewporter: Option<WpViewporter> = try_bind(&globals, &qh);
     let alpha_modifier: Option<WpAlphaModifierV1> = try_bind(&globals, &qh);
     let gamma_manager: Option<ZwlrGammaControlManagerV1> = try_bind(&globals, &qh);
-    let toplevel_manager: Option<ZwlrForeignToplevelManagerV1> = if config.skip_active {
-        try_bind(&globals, &qh)
-    } else {
-        None
-    };
+    let toplevel_manager: Option<ZwlrForeignToplevelManagerV1> = try_bind(&globals, &qh);
 
     // Create DimController
     let dim = DimController::new(
@@ -100,7 +97,6 @@ pub(crate) fn run(
         config
             .target_brightness
             .map(super::render::Brightness::as_f64),
-        config.skip_active,
     );
 
     let phase = if config.fade_duration.is_some() {
@@ -154,6 +150,9 @@ pub(crate) fn run(
     // Fade-in uses the event queue directly (flush + dispatch_pending)
     // to avoid reading new events that could disturb DimController state
     // while the animation is running.
+    //
+    // For spawn_with, all outputs fade in together (no skipping) so the
+    // callback's window launches behind fully opaque overlays.
     if let Some(duration) = app.config().fade_duration {
         run_fade_in(&mut app, &mut event_queue, duration)?;
     } else {
@@ -161,8 +160,16 @@ pub(crate) fn run(
         app.apply_updates(&updates);
     }
 
+    // For spawn_with: call the callback now that overlays are opaque,
+    // then enter WaitingForReveal to detect the new window.
+    if let Some(callback) = spawn_callback {
+        app.begin_waiting_for_reveal();
+        callback();
+    } else {
+        app.set_phase(AppPhase::Running);
+    }
+
     // Hand the event queue to calloop for steady-state dispatch
-    app.set_phase(AppPhase::Running);
     let mut event_loop: EventLoop<App> =
         EventLoop::try_new().map_err(|e| SpawnError::Setup(e.into()))?;
     WaylandSource::new(conn, event_queue)
@@ -223,14 +230,21 @@ fn run_steady_state(
     let animation_tick = Duration::from_millis(8);
     let idle_timeout = Duration::from_millis(100);
 
-    while app.phase() == AppPhase::Running {
+    while matches!(app.phase(), AppPhase::Running | AppPhase::WaitingForReveal) {
         if shutdown.load(Ordering::Acquire) {
             app.set_phase(AppPhase::ShuttingDown);
             break;
         }
 
+        if app.phase() == AppPhase::WaitingForReveal {
+            app.check_reveal();
+        }
+
         let timeout = if app.is_animating() {
             app.tick_transition();
+            animation_tick
+        } else if app.phase() == AppPhase::WaitingForReveal {
+            // Poll frequently while waiting for the new toplevel
             animation_tick
         } else {
             idle_timeout
