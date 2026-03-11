@@ -13,7 +13,6 @@
 //!
 //! // Dim all monitors except the one with the focused window
 //! let zen = ZenWindow::builder()
-//!     .skip_active()
 //!     .opacity(0.85)
 //!     .fade_in(Duration::from_millis(500))
 //!     .spawn()
@@ -22,6 +21,26 @@
 //! // Overlays stay up as long as the handle is alive
 //! // Dropping it removes overlays and restores gamma
 //! drop(zen);
+//! ```
+//!
+//! # Choreographed launch
+//!
+//! Use [`spawn_with()`](ZenWindowBuilder::spawn_with) to own the sequencing
+//! when launching an application. The library fades all outputs to target
+//! opacity, calls your callback, then reveals the output where the new
+//! window appears.
+//!
+//! ```no_run
+//! # use wl_zenwindow::ZenWindow;
+//! # use std::time::Duration;
+//! # use std::process::Command;
+//! let zen = ZenWindow::builder()
+//!     .opacity(0.85)
+//!     .fade_in(Duration::from_millis(300))
+//!     .spawn_with(|| {
+//!         Command::new("my-fullscreen-app").spawn().unwrap();
+//!     })
+//!     .expect("failed to start zen overlays");
 //! ```
 //!
 //! # Non-blocking spawn
@@ -34,7 +53,6 @@
 //! # use wl_zenwindow::ZenWindow;
 //! # use std::time::Duration;
 //! let _zen = ZenWindow::builder()
-//!     .skip_active()
 //!     .settle_delay(Duration::from_millis(100))
 //!     .fade_in(Duration::from_millis(500))
 //!     .spawn_nonblocking();
@@ -48,7 +66,7 @@
 //! ```no_run
 //! use wl_zenwindow::{ZenWindow, SpawnError};
 //!
-//! let zen = match ZenWindow::builder().skip_active().spawn() {
+//! let zen = match ZenWindow::builder().spawn() {
 //!     Ok(handle) => Some(handle),
 //!     Err(SpawnError::WaylandConnection(_)) => {
 //!         eprintln!("not running on Wayland, skipping overlays");
@@ -68,8 +86,10 @@
 //! # Configuration
 //!
 //! All configuration is done through [`ZenWindowBuilder`]. Every setting has a
-//! sensible default — the only required call is [`spawn()`](ZenWindowBuilder::spawn)
-//! or [`spawn_nonblocking()`](ZenWindowBuilder::spawn_nonblocking).
+//! sensible default — the only required call is one of
+//! [`spawn()`](ZenWindowBuilder::spawn),
+//! [`spawn_with()`](ZenWindowBuilder::spawn_with), or
+//! [`spawn_nonblocking()`](ZenWindowBuilder::spawn_nonblocking).
 //!
 //! | Method | Default | Range | Description |
 //! |--------|---------|-------|-------------|
@@ -78,7 +98,6 @@
 //! | [`color()`](ZenWindowBuilder::color) | `(0, 0, 0)` | RGB `u8` triplet | Overlay color. |
 //! | [`fade_in()`](ZenWindowBuilder::fade_in) | `None` | `Duration` | Fade-in duration (ease-out curve). `None` = instant. |
 //! | [`settle_delay()`](ZenWindowBuilder::settle_delay) | `None` | `Duration` | Delay before creating surfaces. Runs on the background thread. |
-//! | [`skip_active()`](ZenWindowBuilder::skip_active) | `false` | — | Leave the focused monitor undimmed. |
 //! | [`skip_output()`](ZenWindowBuilder::skip_output) | empty | — | Skip specific outputs by Wayland name (e.g. `"DP-1"`). |
 //! | [`namespace()`](ZenWindowBuilder::namespace) | `"wl-zenwindow"` | string | Layer-shell namespace for the overlay surfaces. |
 //!
@@ -118,15 +137,14 @@
 //!
 //! ## Focus tracking
 //!
-//! When [`skip_active()`](ZenWindowBuilder::skip_active) is enabled, the
-//! library binds `zwlr_foreign_toplevel_manager_v1` and watches for activated
-//! toplevel events. Each toplevel reports which output it's on. When the
-//! activated toplevel changes outputs, the library cross-fades: the overlay
-//! on the newly active output fades out while the previously active output
-//! returns to its dimmed state.
+//! The library automatically binds `zwlr_foreign_toplevel_manager_v1` and
+//! watches for activated toplevel events. Each toplevel reports which output
+//! it's on. When the activated toplevel changes outputs, the library
+//! cross-fades: the overlay on the newly active output fades out while the
+//! previously active output returns to its dimmed state.
 //!
 //! If the protocol isn't available (e.g., on compositors that don't implement
-//! it), `skip_active()` has no effect and all non-skipped outputs are dimmed.
+//! it), all non-skipped outputs are dimmed uniformly.
 //!
 //! ## Gamma control contention
 //!

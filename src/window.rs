@@ -12,17 +12,26 @@ use crate::render::Color;
 use crate::render::Opacity;
 use crate::run::run;
 
+/// How the background thread was spawned — determines lifecycle phases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpawnMode {
+    /// Standard spawn. Focus tracking is always on.
+    Standard,
+    /// Choreographed launch: fade in all outputs, run callback, reveal.
+    SpawnWith,
+}
+
 /// Resolved configuration passed to the background thread.
 ///
-/// Created from [`ZenWindowBuilder`] via the [`From`] impl. This is a plain
+/// Created from [`ZenWindowBuilder`] at spawn time. This is a plain
 /// data struct with no builder methods — all validation and defaults are
 /// handled by the builder.
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
     /// Output names to never create surfaces on.
     pub(crate) skip_names: HashSet<String>,
-    /// Whether to leave the focused output undimmed.
-    pub(crate) skip_active: bool,
+    /// How this instance was spawned.
+    pub(crate) spawn_mode: SpawnMode,
     /// Layer-shell namespace for overlay surfaces.
     pub(crate) namespace: String,
     /// Delay before connecting to Wayland and creating surfaces.
@@ -40,7 +49,6 @@ pub(crate) struct Config {
 /// Builder for configuring which outputs to dim.
 pub struct ZenWindowBuilder {
     skip_names: HashSet<String>,
-    skip_active: bool,
     namespace: String,
     settle_delay: Option<Duration>,
     fade_duration: Option<Duration>,
@@ -54,7 +62,6 @@ impl ZenWindowBuilder {
     fn new() -> Self {
         Self {
             skip_names: HashSet::new(),
-            skip_active: false,
             namespace: "wl-zenwindow".into(),
             settle_delay: None,
             fade_duration: None,
@@ -68,17 +75,6 @@ impl ZenWindowBuilder {
     #[must_use]
     pub fn skip_output(mut self, name: impl Into<String>) -> Self {
         self.skip_names.insert(name.into());
-        self
-    }
-
-    /// Automatically skip the output that has the focused window.
-    ///
-    /// Uses `zwlr_foreign_toplevel_manager_v1` to detect which output
-    /// has the currently activated toplevel. Falls back to dimming all
-    /// outputs if the protocol is unavailable or no toplevel is focused.
-    #[must_use]
-    pub fn skip_active(mut self) -> Self {
-        self.skip_active = true;
         self
     }
 
@@ -172,21 +168,82 @@ impl ZenWindowBuilder {
     /// milliseconds). Returns a [`ZenWindow`] handle. Dropping it removes
     /// overlays and restores gamma.
     ///
+    /// Focus tracking is automatic: the focused output stays undimmed
+    /// while all other outputs are dimmed. If the compositor doesn't
+    /// support `zwlr_foreign_toplevel_manager_v1`, all outputs are dimmed.
+    ///
     /// # Errors
     ///
     /// Returns [`SpawnError`] if the Wayland connection fails, a required
     /// protocol is missing, setup fails after connecting, or the background
     /// thread cannot be created.
     pub fn spawn(self) -> Result<ZenWindow, SpawnError> {
+        self.spawn_inner(SpawnMode::Standard, None)
+    }
+
+    /// Spawn with a choreographed launch sequence.
+    ///
+    /// 1. Fades in ALL outputs to target opacity (everything goes dark)
+    /// 2. Calls the callback (your app launches behind the opaque overlay)
+    /// 3. Watches for the new window via toplevel protocol
+    /// 4. Once the window settles (fullscreen detected, or timeout), reveals
+    ///    the active output's overlay
+    ///
+    /// After the reveal, focus tracking is active — the focused output stays
+    /// undimmed while others remain dimmed.
+    ///
+    /// The callback runs on the background thread after the fade-in completes.
+    /// `FnOnce` since it's called exactly once. `Send + 'static` because it
+    /// crosses into the background thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpawnError`] if the Wayland connection fails, a required
+    /// protocol is missing, setup fails after connecting, or the background
+    /// thread cannot be created.
+    pub fn spawn_with<F>(self, f: F) -> Result<ZenWindow, SpawnError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.spawn_inner(SpawnMode::SpawnWith, Some(Box::new(f)))
+    }
+
+    /// Spawn without blocking the calling thread.
+    ///
+    /// Returns immediately. Wayland setup and fade happen entirely
+    /// in the background. If setup fails, it fails silently.
+    ///
+    /// Returns a [`ZenWindow`] handle. Dropping it removes overlays.
+    #[must_use]
+    pub fn spawn_nonblocking(self) -> ZenWindow {
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let handle = std::thread::Builder::new()
+            .name("wl-zenwindow".into())
+            .spawn({
+                let config = self.to_config(SpawnMode::Standard);
+                let shutdown = Arc::clone(&shutdown);
+                move || run(&config, None, &shutdown, None)
+            })
+            .ok();
+
+        ZenWindow { handle, shutdown }
+    }
+
+    fn spawn_inner(
+        self,
+        spawn_mode: SpawnMode,
+        callback: Option<Box<dyn FnOnce() + Send + 'static>>,
+    ) -> Result<ZenWindow, SpawnError> {
         let (ready_tx, ready_rx) = mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let handle = std::thread::Builder::new()
             .name("wl-zenwindow".into())
             .spawn({
-                let config = Config::from(&self);
+                let config = self.to_config(spawn_mode);
                 let shutdown = Arc::clone(&shutdown);
-                move || run(&config, Some(ready_tx), &shutdown)
+                move || run(&config, Some(ready_tx), &shutdown, callback)
             })
             .map_err(SpawnError::ThreadSpawn)?;
 
@@ -208,28 +265,6 @@ impl ZenWindowBuilder {
                 }
             }
         }
-    }
-
-    /// Spawn without blocking the calling thread.
-    ///
-    /// Returns immediately. Wayland setup and fade happen entirely
-    /// in the background. If setup fails, it fails silently.
-    ///
-    /// Returns a [`ZenWindow`] handle. Dropping it removes overlays.
-    #[must_use]
-    pub fn spawn_nonblocking(self) -> ZenWindow {
-        let shutdown = Arc::new(AtomicBool::new(false));
-
-        let handle = std::thread::Builder::new()
-            .name("wl-zenwindow".into())
-            .spawn({
-                let config = Config::from(&self);
-                let shutdown = Arc::clone(&shutdown);
-                move || run(&config, None, &shutdown)
-            })
-            .ok();
-
-        ZenWindow { handle, shutdown }
     }
 }
 
@@ -273,18 +308,17 @@ impl Drop for ZenWindow {
     }
 }
 
-/// Converts builder settings into internal config.
-impl From<&ZenWindowBuilder> for Config {
-    fn from(b: &ZenWindowBuilder) -> Self {
-        Self {
-            skip_names: b.skip_names.clone(),
-            skip_active: b.skip_active,
-            namespace: b.namespace.clone(),
-            settle_delay: b.settle_delay,
-            fade_duration: b.fade_duration,
-            target_opacity: b.opacity,
-            color: b.color,
-            target_brightness: b.brightness,
+impl ZenWindowBuilder {
+    fn to_config(&self, spawn_mode: SpawnMode) -> Config {
+        Config {
+            skip_names: self.skip_names.clone(),
+            spawn_mode,
+            namespace: self.namespace.clone(),
+            settle_delay: self.settle_delay,
+            fade_duration: self.fade_duration,
+            target_opacity: self.opacity,
+            color: self.color,
+            target_brightness: self.brightness,
         }
     }
 }
@@ -298,7 +332,6 @@ mod tests {
     fn builder_defaults() {
         let b = ZenWindowBuilder::new();
         assert!(b.skip_names.is_empty());
-        assert!(!b.skip_active);
         assert_eq!(b.namespace, "wl-zenwindow");
         assert!(b.settle_delay.is_none());
         assert!(b.fade_duration.is_none());
@@ -356,7 +389,6 @@ mod tests {
     #[test]
     fn builder_chaining() {
         let b = ZenWindow::builder()
-            .skip_active()
             .namespace("custom")
             .color([255, 0, 128])
             .opacity(0.5)
@@ -364,7 +396,6 @@ mod tests {
             .settle_delay(Duration::from_millis(200))
             .fade_in(Duration::from_millis(500));
 
-        assert!(b.skip_active);
         assert_eq!(b.namespace, "custom");
         assert_eq!(b.color, Color::new(255, 0, 128));
         assert!((b.opacity.as_f64() - 0.5).abs() < f64::EPSILON);
@@ -377,10 +408,9 @@ mod tests {
     }
 
     #[test]
-    fn config_from_builder_transfers_all_fields() {
+    fn config_transfers_all_fields() {
         let b = ZenWindow::builder()
             .skip_output("HDMI-1")
-            .skip_active()
             .namespace("test-ns")
             .settle_delay(Duration::from_millis(100))
             .fade_in(Duration::from_secs(1))
@@ -388,10 +418,10 @@ mod tests {
             .color([10, 20, 30])
             .brightness(0.6);
 
-        let config = Config::from(&b);
+        let config = b.to_config(SpawnMode::Standard);
 
         assert!(config.skip_names.contains("HDMI-1"));
-        assert!(config.skip_active);
+        assert_eq!(config.spawn_mode, SpawnMode::Standard);
         assert_eq!(config.namespace, "test-ns");
         assert_eq!(config.settle_delay, Some(Duration::from_millis(100)));
         assert_eq!(config.fade_duration, Some(Duration::from_secs(1)));
@@ -406,12 +436,19 @@ mod tests {
     }
 
     #[test]
-    fn config_from_builder_defaults() {
+    fn config_spawn_with_mode() {
         let b = ZenWindowBuilder::new();
-        let config = Config::from(&b);
+        let config = b.to_config(SpawnMode::SpawnWith);
+        assert_eq!(config.spawn_mode, SpawnMode::SpawnWith);
+    }
+
+    #[test]
+    fn config_defaults() {
+        let b = ZenWindowBuilder::new();
+        let config = b.to_config(SpawnMode::Standard);
 
         assert!(config.skip_names.is_empty());
-        assert!(!config.skip_active);
+        assert_eq!(config.spawn_mode, SpawnMode::Standard);
         assert_eq!(config.namespace, "wl-zenwindow");
         assert!(config.settle_delay.is_none());
         assert!(config.fade_duration.is_none());

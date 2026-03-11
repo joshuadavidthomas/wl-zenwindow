@@ -70,7 +70,6 @@ fn main() {
             |_window, cx| {
                 let zen = wl_zenwindow::ZenWindow::builder()
                     .namespace("wl-zenwindow-demo")
-                    .skip_active()
                     .settle_delay(std::time::Duration::from_millis(200))
                     .fade_in(std::time::Duration::from_millis(500))
                     .spawn_nonblocking();

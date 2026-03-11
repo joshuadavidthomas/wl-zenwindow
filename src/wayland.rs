@@ -17,7 +17,9 @@
 //! `zwlr_foreign_toplevel_manager_v1`: which output each toplevel is on and
 //! whether it has keyboard focus ([`ToplevelFocus`]). The `Done` event triggers
 //! [`App::refresh_active_output`] to start cross-fade transitions when focus
-//! moves between monitors.
+//! moves between monitors. During [`AppPhase::WaitingForReveal`] (after a
+//! `spawn_with` callback), `Done` events instead check for new fullscreen
+//! toplevels to trigger the reveal.
 //!
 //! Window movement (focused toplevel changing outputs mid-drag) snaps all
 //! overlays opaque immediately to prevent flash, then resumes normal
@@ -134,6 +136,11 @@ impl TrackedToplevel {
             ToplevelFocus::Active => self.output.as_ref(),
             ToplevelFocus::Inactive => None,
         }
+    }
+
+    /// The output this toplevel is currently on, regardless of focus.
+    pub fn output(&self) -> Option<&WlOutput> {
+        self.output.as_ref()
     }
 
     pub fn is_focused(&self) -> bool {
@@ -395,7 +402,11 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for App {
                 toplevel.update_focus(focus);
             }
             zwlr_foreign_toplevel_handle_v1::Event::Done => {
-                state.refresh_active_output();
+                if state.phase() == AppPhase::WaitingForReveal {
+                    state.check_reveal();
+                } else {
+                    state.refresh_active_output();
+                }
             }
             zwlr_foreign_toplevel_handle_v1::Event::Closed => {
                 state.remove_toplevel(proxy);
